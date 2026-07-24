@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+--navy:#12295C;--blue:#1668CF;--bluet:#0F4FA8;--green:#1E7A3C;--amber:#B36B00;--red:#B3261E;
+--surface:#FFFFFF;--bg:#F4F6FA;--text:#1A1A1A;--muted:#5A6472;--line:#E4E8F0;
+--r:12px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{font-family:'Manrope',system-ui,-apple-system,sans-serif;color:var(--text);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;font-synthesis:none;letter-spacing:.005em}
+input,select,textarea,button{-webkit-font-smoothing:antialiased}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit;margin:0}
+input,select,textarea{font:inherit;color:inherit;outline:none}
+.mono{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.press{transition:transform .06s ease, filter .06s ease}
+.press:active{transform:scale(.97);filter:brightness(.96)}
+.scr{scrollbar-width:none;-ms-overflow-style:none}
+.scr::-webkit-scrollbar{width:0;height:0}
+a{color:var(--bluet);text-decoration:none}
+a:hover{color:var(--navy)}
+@keyframes gfmUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes gfmFade{from{opacity:0}to{opacity:1}}
+@keyframes gfmPop{from{transform:scale(.95);opacity:0}to{transform:scale(1);opacity:1}}
+</style>
+</helmet>
+<div id="gfmroot">{{ app }}</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:460,&quot;height&quot;:940},&quot;afficherCadre&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Aperçu&quot;},&quot;demarrerVerrouille&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Aperçu&quot;},&quot;donneesDemo&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Données&quot;}}">
+const h = React.createElement, F = React.Fragment;
+const KEY = "gfm_db_v3";
+const TABLES = ["vehicule","prestation","agent","encaissement","mouvement_dette_personnel","journal_audit","parametre"];
+const MOIS = ["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."];
+const MOISL = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+
+class Component extends DCLogic {
+  state = this.build();
+
+  /* ---------- init / persistence ---------- */
+  build(){
+    const pr = this.props || {};
+    let db = this.load();
+    if(!db){ db = this.seed(pr.donneesDemo ?? true); this.persist(db); }
+    return {
+      db, rev:0,
+      locked: pr.demarrerVerrouille ?? true,
+      codeBuf:"",
+      view:"accueil", stack:[], params:{},
+      sf:null, saved:null,
+      keypad:null, confirm:null, undo:null, toast:null, datePick:null, agentsInactifs:false,
+      idleWarn:false, idleLeft:300,
+      accPeriode:"jour", accFrom:"", accTo:"",
+      auditPeriode:"jour", auditFrom:"", auditTo:"",
+      periode:"jour", customFrom:"", customTo:"",
+      histoPeriode:"tout", histoFrom:"", histoTo:"",
+      rapportKind:null, restoreStep:null, restoreData:null, restoreWord:""
+    };
+  }
+  load(){ try{ const s=localStorage.getItem(KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
+  persist(db){ try{ localStorage.setItem(KEY, JSON.stringify(db||this.state.db)); }catch(e){} }
+  commit(){ this.persist(); this.setState(s=>({rev:s.rev+1})); }
+  componentDidMount(){
+    this._lastActivity=Date.now();
+    this._bump=()=>{ if(!this.state.locked && !this.state.idleWarn) this._lastActivity=Date.now(); };
+    ["pointerdown","keydown","touchstart"].forEach(ev=>document.addEventListener(ev,this._bump,{passive:true}));
+    this._idleTick=setInterval(()=>{
+      if(this.state.locked) return;
+      if(!this.state.idleWarn){
+        if(Date.now()-this._lastActivity>=600000){ this._warnStart=Date.now(); this.setState({idleWarn:true,idleLeft:300}); }
+      }else{
+        const left=Math.max(0,300-Math.floor((Date.now()-this._warnStart)/1000));
+        if(left<=0){ this.setState({idleWarn:false,locked:true,codeBuf:"",view:"accueil",stack:[]}); }
+        else if(left!==this.state.idleLeft){ this.setState({idleLeft:left}); }
+      }
+    },1000);
+  }
+  componentWillUnmount(){ clearInterval(this._idleTick); ["pointerdown","keydown","touchstart"].forEach(ev=>document.removeEventListener(ev,this._bump)); }
+  resetIdle(){ this._lastActivity=Date.now(); if(this.state.idleWarn) this.setState({idleWarn:false}); }
+  nextId(t){ const db=this.state.db; db.seq=db.seq||{}; db.seq[t]=(db.seq[t]||0)+1; return db.seq[t]; }
+  audit(table,id,action,before){
+    const db=this.state.db;
+    const entry={id:this.nextId("journal_audit"),table_cible:table,enregistrement_id:id,action,valeur_avant:before?JSON.stringify(before):null,valeur_apres:null,horodatage:this.nowIso()};
+    db.journal_audit.push(entry);
+    setTimeout(()=>{ try{ const rec=(db[table]||[]).find(r=>r.id===id); if(rec){ entry.valeur_apres=JSON.stringify({...rec}); this.persist(); } }catch(e){} },0);
+  }
+
+  seed(demo){
+    const db={vehicule:[],prestation:[],agent:[],encaissement:[],mouvement_dette_personnel:[],journal_audit:[],parametre:[],seq:{}};
+    const now=this.nowIso();
+    const P=(libelle,montant,part,icone,ordre)=>db.prestation.push({id:this.seqOn(db,"prestation"),libelle,montant,part_laveur_defaut:part,icone,ordre,actif:1});
+    P("Lavage simple",2000,700,"simple",1);
+    P("Lavage complet",3500,1200,"complet",2);
+    P("Lavage moto",1000,400,"moto",3);
+    P("Nettoyage intérieur",2500,900,"interieur",4);
+    P("Lustrage carrosserie",5000,1800,"lustrage",5);
+    const params={version_schema:"1",heure_cloture_caisse:"22",code_verrouillage_hash:this.djb2("0000"),derniere_sauvegarde:"",version_application:"1.0.0"};
+    Object.keys(params).forEach(k=>db.parametre.push({cle:k,valeur:params[k]}));
+    if(!demo) return db;
+    const A=(nom,prenom,fonction,dette,salaire)=>db.agent.push({id:this.seqOn(db,"agent"),nom,prenom,telephone:"",fonction,dette_ouverture:dette||0,salaire_brut:salaire||0,actif:1,motif_inactif:"",date_inactif:""});
+    A("Mabiala","Jean","Laveur",0,90000);A("Nkodia","Paul","Laveur",0,90000);A("Loemba","André","Laveur",5000,90000);A("Samba","Éric","Gardien",0,80000);
+    const laveurs=[1,2,3];
+    const V=(immat,ch,tel,d,a)=>db.vehicule.push({id:this.seqOn(db,"vehicule"),immatriculation:immat,chauffeur:ch,telephone:tel||"",dette_ouverture:d||0,avance_ouverture:a||0,derniere_utilisation:now,actif:1,cree_le:now});
+    V("AB-123-CG","Serge Ondongo","06 111 22 33",5000,0);
+    V("CD-456-CG","Marlène Kaya","05 444 55 66",0,3000);
+    V("EF-789-CG","Blaise Moukala","",0,0);
+    V("GH-012-CG","Prince Tati","",0,0);
+    V("IJ-345-CG","Aline Bemba","06 777 88 99",2000,0);
+    V("KL-678-CG","Rodrigue Nzaba","",0,0);
+    V("MN-901-CG","Divine Loubota","",0,0);
+    V("OP-234-CG","Chris Malonga","",0,0);
+    // seeded historical encaissements
+    let rng=(function(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};})(20260723);
+    const bz=new Date(Date.now()+3600000);
+    let baseDay=bz.getUTCDate(); if(bz.getUTCHours()>=22) baseDay+=1;
+    for(let dOff=13; dOff>=0; dOff--){
+      const d=new Date(Date.UTC(bz.getUTCFullYear(),bz.getUTCMonth(),baseDay-dOff));
+      const dateOp=this.isoDate(d);
+      const n=3+Math.floor(rng()*4);
+      for(let k=0;k<n;k++){
+        const veh=db.vehicule[Math.floor(rng()*db.vehicule.length)];
+        const prest=db.prestation[Math.floor(rng()*db.prestation.length)];
+        const rec=prest.montant, part=prest.part_laveur_defaut;
+        let dc=0,dp=0,au=0,av=0;
+        const roll=rng();
+        if(roll<0.14) dc=rec; else if(roll<0.22){ dc=Math.min(rec,500*(1+Math.floor(rng()*3))); }
+        if(rng()<0.10) av=1000*(2+Math.floor(rng()*4));
+        const hh=String(8+Math.floor(rng()*12)).padStart(2,"0"), mm=String(Math.floor(rng()*60)).padStart(2,"0");
+        const nette=rec-part-dc+dp-au+av;
+        db.encaissement.push({id:this.seqOn(db,"encaissement"),date_operation:dateOp,horodatage_saisie:dateOp+"T"+hh+":"+mm+":00+01:00",vehicule_id:veh.id,prestation_id:prest.id,recette_lavage:rec,laveur_agent_id:laveurs[Math.floor(rng()*laveurs.length)],part_laveur:part,dette_contractee:dc,dette_payee:dp,avance_utilisee:au,avance_versee:av,recette_nette:nette,note:"",supprime:0,modifie_le:null});
+      }
+    }
+    const M=(agent_id,type,montant,motif,dOff)=>{const d=new Date(Date.UTC(bz.getUTCFullYear(),bz.getUTCMonth(),bz.getUTCDate()-dOff));db.mouvement_dette_personnel.push({id:this.seqOn(db,"mouvement_dette_personnel"),agent_id,date_operation:this.isoDate(d),type,montant,motif,supprime:0,horodatage_saisie:now});};
+    M(1,"DETTE",3000,"Avance sur salaire",8);M(2,"DETTE",2000,"Avance sur salaire",6);M(2,"REMBOURSEMENT",1000,"Retenue paie",2);
+    return db;
+  }
+  seqOn(db,t){ db.seq=db.seq||{}; db.seq[t]=(db.seq[t]||0)+1; return db.seq[t]; }
+
+  /* ---------- helpers ---------- */
+  djb2(s){ let h=5381; for(let i=0;i<s.length;i++) h=((h<<5)+h+s.charCodeAt(i))>>>0; return "h"+h.toString(16); }
+  param(k){ const p=this.state.db.parametre.find(x=>x.cle===k); return p?p.valeur:null; }
+  setParam(k,v){ const p=this.state.db.parametre.find(x=>x.cle===k); if(p)p.valeur=v; else this.state.db.parametre.push({cle:k,valeur:v}); }
+  fmt(n){ const neg=n<0; const s=Math.abs(Math.round(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g,"\u00A0"); return (neg?"\u2212":"")+s+"\u00A0FCFA"; }
+  fmtN(n){ const neg=n<0; const s=Math.abs(Math.round(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g,"\u00A0"); return (neg?"\u2212":"")+s; }
+  norm(s){ return (s||"").toUpperCase().replace(/[\s-]/g,""); }
+  isoDate(d){ return d.getUTCFullYear()+"-"+String(d.getUTCMonth()+1).padStart(2,"0")+"-"+String(d.getUTCDate()).padStart(2,"0"); }
+  nowIso(){ return new Date(Date.now()+3600000).toISOString().replace(/\.\d+Z$/,"+01:00"); }
+  bzNow(){ return new Date(Date.now()+3600000); }
+  journeeToday(){
+    const b=this.bzNow(); const cl=parseInt(this.param("heure_cloture_caisse")||"22",10);
+    let y=b.getUTCFullYear(),m=b.getUTCMonth(),day=b.getUTCDate();
+    if(b.getUTCHours()>=cl){ const n=new Date(Date.UTC(y,m,day+1)); return this.isoDate(n); }
+    return this.isoDate(new Date(Date.UTC(y,m,day)));
+  }
+  frDate(iso){ if(!iso) return "—"; const [y,m,d]=iso.split("-"); return parseInt(d,10)+" "+MOIS[parseInt(m,10)-1]+" "+y; }
+  frDateLong(iso){ if(!iso) return "—"; const [y,m,d]=iso.split("-"); return parseInt(d,10)+" "+MOISL[parseInt(m,10)-1]+" "+y; }
+  heure(hor){ if(!hor) return ""; const t=hor.split("T")[1]||""; return t.slice(0,5); }
+
+  encActifs(){ return this.state.db.encaissement.filter(e=>e.supprime===0); }
+  calc(s){ return s.recetteLavage - s.partLaveur - s.detteContractee + s.dettePayee - s.avanceUtilisee + s.avanceVersee; }
+  soldeDette(vid){ const v=this.state.db.vehicule.find(x=>x.id===vid); if(!v) return 0; let s=v.dette_ouverture; this.encActifs().forEach(e=>{ if(e.vehicule_id===vid) s+=e.dette_contractee-e.dette_payee; }); return s; }
+  soldeAvance(vid){ const v=this.state.db.vehicule.find(x=>x.id===vid); if(!v) return 0; let s=v.avance_ouverture; this.encActifs().forEach(e=>{ if(e.vehicule_id===vid) s+=e.avance_versee-e.avance_utilisee; }); return s; }
+  detteAgent(aid){ const a=this.state.db.agent.find(x=>x.id===aid); if(!a) return 0; let s=a.dette_ouverture; this.state.db.mouvement_dette_personnel.filter(m=>m.supprime===0&&m.agent_id===aid).forEach(m=>{ s+= m.type==="DETTE"?m.montant:-m.montant; }); return s; }
+  controle(s,soldeD,soldeA){
+    const e=[];
+    if(!(s.recetteLavage>0)) e.push("Sélectionnez une prestation.");
+    if(!(s.partLaveur>=0 && s.partLaveur<=s.recetteLavage)) e.push("La part du laveur ne peut pas dépasser le montant du lavage.");
+    if(s.detteContractee+s.avanceUtilisee>s.recetteLavage) e.push("Le total de la dette et de l'avance dépasse le montant du lavage.");
+    if(s.avanceUtilisee>soldeA) e.push("Ce véhicule ne dispose que de "+this.fmt(soldeA)+" d'avance.");
+    if(s.dettePayee>soldeD) e.push("Ce véhicule ne doit que "+this.fmt(soldeD)+".");
+    return e;
+  }
+
+  /* ---------- navigation ---------- */
+  nav(view,params){ this.setState(s=>({stack:[...s.stack,{view:s.view,params:s.params}],view,params:params||{}})); }
+  back(){ this.setState(s=>{ const st=[...s.stack]; const prev=st.pop(); return prev?{view:prev.view,params:prev.params,stack:st}:{view:"accueil",stack:[]}; }); }
+  tab(view){ this.setState({view,params:{},stack:[]}); }
+  toast(msg){ this.setState({toast:msg}); clearTimeout(this._tt); this._tt=setTimeout(()=>this.setState({toast:null}),2600); }
+  openConfirm(cfg){ this.setState({confirm:cfg}); }
+  openKeypad(cfg){ this.setState({keypad:{...cfg,buf:String(cfg.value||"")}}); }
+
+  /* ---------- saisie ---------- */
+  newSF(){ return {editId:null,vehicule_id:null,vehSearch:"",prestation_id:null,partLaveur:0,laveur_agent_id:null,detteContractee:0,dettePayee:0,avanceUtilisee:0,avanceVersee:0,avanceOverride:false,dateOp:this.journeeToday(),note:"",open:false}; }
+  openSaisie(editId){
+    let sf=this.newSF();
+    if(editId){
+      const e=this.state.db.encaissement.find(x=>x.id===editId);
+      const v=this.state.db.vehicule.find(x=>x.id===e.vehicule_id);
+      sf={editId,vehicule_id:e.vehicule_id,vehSearch:v?v.immatriculation:"",prestation_id:e.prestation_id,partLaveur:e.part_laveur,laveur_agent_id:e.laveur_agent_id,detteContractee:e.dette_contractee,dettePayee:e.dette_payee,avanceUtilisee:e.avance_utilisee,avanceVersee:e.avance_versee,avanceOverride:true,dateOp:e.date_operation,note:e.note||"",open:(e.dette_contractee||e.dette_payee||e.avance_utilisee||e.avance_versee)>0};
+    }
+    this.setState({sf,saved:null},()=>this.nav("saisie"));
+  }
+  setSF(patch){ this.setState(s=>({sf:{...s.sf,...patch}})); }
+  selectVeh(v){
+    const sf=this.state.sf; const prest=this.state.db.prestation.find(p=>p.id===sf.prestation_id);
+    const soldeA=this.soldeAvance(v.id); const rec=prest?prest.montant:0;
+    let au=sf.avanceUtilisee, open=sf.open;
+    if(!sf.avanceOverride && soldeA>0 && rec>0){ au=Math.min(soldeA,rec); open=true; }
+    this.setSF({vehicule_id:v.id,vehSearch:v.immatriculation,avanceUtilisee:au,open:open||soldeA>0});
+  }
+  selectPrest(p){
+    const sf=this.state.sf; const soldeA=sf.vehicule_id?this.soldeAvance(sf.vehicule_id):0;
+    let au=sf.avanceUtilisee;
+    if(!sf.avanceOverride && soldeA>0){ au=Math.min(soldeA,p.montant); }
+    this.setSF({prestation_id:p.id,partLaveur:p.part_laveur_defaut,avanceUtilisee:au,laveur_agent_id:sf.laveur_agent_id||(this.state.db.agent.filter(a=>a.actif&&a.fonction==="Laveur")[0]||{}).id||null});
+  }
+  vehResults(){
+    const q=this.norm(this.state.sf.vehSearch);
+    let list=this.state.db.vehicule.filter(v=>v.actif===1);
+    list.sort((a,b)=>String(b.derniere_utilisation||"").localeCompare(String(a.derniere_utilisation||"")));
+    if(q) list=list.filter(v=>this.norm(v.immatriculation).includes(q)||this.norm(v.chauffeur).includes(q));
+    return list.slice(0,6);
+  }
+  saveSaisie(){
+    const sf=this.state.sf; const db=this.state.db;
+    const prest=db.prestation.find(p=>p.id===sf.prestation_id);
+    const rec=prest.montant;
+    const s={recetteLavage:rec,partLaveur:sf.partLaveur,detteContractee:sf.detteContractee,dettePayee:sf.dettePayee,avanceUtilisee:sf.avanceUtilisee,avanceVersee:sf.avanceVersee};
+    const nette=this.calc(s);
+    const veh=db.vehicule.find(v=>v.id===sf.vehicule_id);
+    if(sf.editId){
+      const e=db.encaissement.find(x=>x.id===sf.editId);
+      this.audit("encaissement",e.id,"MODIFICATION",{...e});
+      Object.assign(e,{date_operation:sf.dateOp,vehicule_id:sf.vehicule_id,prestation_id:sf.prestation_id,recette_lavage:rec,laveur_agent_id:sf.laveur_agent_id,part_laveur:sf.partLaveur,dette_contractee:sf.detteContractee,dette_payee:sf.dettePayee,avance_utilisee:sf.avanceUtilisee,avance_versee:sf.avanceVersee,recette_nette:nette,note:sf.note,modifie_le:this.nowIso()});
+    }else{
+      const id=this.nextId("encaissement");
+      db.encaissement.push({id,date_operation:sf.dateOp,horodatage_saisie:this.nowIso(),vehicule_id:sf.vehicule_id,prestation_id:sf.prestation_id,recette_lavage:rec,laveur_agent_id:sf.laveur_agent_id,part_laveur:sf.partLaveur,dette_contractee:sf.detteContractee,dette_payee:sf.dettePayee,avance_utilisee:sf.avanceUtilisee,avance_versee:sf.avanceVersee,recette_nette:nette,note:sf.note,supprime:0,modifie_le:null});
+      this.audit("encaissement",id,"CREATION",null);
+    }
+    if(veh) veh.derniere_utilisation=this.nowIso();
+    if(navigator.vibrate) try{navigator.vibrate(20);}catch(e){}
+    this.persist();
+    this.setState(s2=>({rev:s2.rev+1,saved:{nette,immat:veh?veh.immatriculation:"",edit:!!sf.editId}}));
+  }
+  deleteEnc(id){
+    const db=this.state.db; const e=db.encaissement.find(x=>x.id===id);
+    this.audit("encaissement",id,"SUPPRESSION",{...e});
+    e.supprime=1; e.modifie_le=this.nowIso();
+    this.persist();
+    clearTimeout(this._undo);
+    this.setState(s=>({rev:s.rev+1,undo:{msg:"Encaissement supprimé",id}}));
+    this._undo=setTimeout(()=>this.setState({undo:null}),8000);
+  }
+  undoDelete(){ const u=this.state.undo; if(!u) return; const e=this.state.db.encaissement.find(x=>x.id===u.id); if(e){ e.supprime=0; this.persist(); } clearTimeout(this._undo); this.setState(s=>({rev:s.rev+1,undo:null})); }
+
+  /* ---------- CRUD refs ---------- */
+  saveVeh(f){
+    const db=this.state.db;
+    if(f.id){ const v=db.vehicule.find(x=>x.id===f.id); this.audit("vehicule",f.id,"MODIFICATION",{...v}); Object.assign(v,{immatriculation:f.immatriculation,chauffeur:f.chauffeur,telephone:f.telephone,dette_ouverture:f.dette_ouverture,avance_ouverture:f.avance_ouverture}); }
+    else{ const id=this.nextId("vehicule"); db.vehicule.push({id,immatriculation:f.immatriculation,chauffeur:f.chauffeur,telephone:f.telephone,dette_ouverture:f.dette_ouverture,avance_ouverture:f.avance_ouverture,derniere_utilisation:this.nowIso(),actif:1,cree_le:this.nowIso()}); this.audit("vehicule",id,"CREATION",null); }
+    this.commit(); this.back();
+  }
+  savePrest(f){
+    const db=this.state.db;
+    if(f.id){ const p=db.prestation.find(x=>x.id===f.id); this.audit("prestation",f.id,"MODIFICATION",{...p}); Object.assign(p,{libelle:f.libelle,montant:f.montant,part_laveur_defaut:f.part_laveur_defaut,ordre:f.ordre}); }
+    else{ const id=this.nextId("prestation"); db.prestation.push({id,libelle:f.libelle,montant:f.montant,part_laveur_defaut:f.part_laveur_defaut,icone:"simple",ordre:f.ordre,actif:1}); this.audit("prestation",id,"CREATION",null); }
+    this.commit(); this.back();
+  }
+  saveAgent(f){
+    const db=this.state.db;
+    if(f.id){ const a=db.agent.find(x=>x.id===f.id); this.audit("agent",f.id,"MODIFICATION",{...a}); Object.assign(a,{nom:f.nom,prenom:f.prenom,telephone:f.telephone,fonction:f.fonction,dette_ouverture:f.dette_ouverture,salaire_brut:f.salaire_brut,actif:f.actif,motif_inactif:f.actif?"":f.motif_inactif,date_inactif:f.actif?"":(f.date_inactif||this.journeeToday())}); }
+    else{ const id=this.nextId("agent"); db.agent.push({id,nom:f.nom,prenom:f.prenom,telephone:f.telephone,fonction:f.fonction,dette_ouverture:f.dette_ouverture,salaire_brut:f.salaire_brut,actif:1,motif_inactif:"",date_inactif:""}); this.audit("agent",id,"CREATION",null); }
+    this.commit(); this.back();
+  }
+  archive(table,id){
+    const db=this.state.db; const rec=db[table].find(x=>x.id===id);
+    this.audit(table,id,"MODIFICATION",{...rec}); rec.actif=0; this.commit();
+  }
+  saveMdp(f){
+    const db=this.state.db; const id=this.nextId("mouvement_dette_personnel");
+    db.mouvement_dette_personnel.push({id,agent_id:f.agent_id,date_operation:f.date_operation,type:f.type,montant:f.montant,motif:f.motif,supprime:0,horodatage_saisie:this.nowIso()});
+    this.audit("mouvement_dette_personnel",id,"CREATION",null); this.commit(); this.back();
+  }
+
+  /* ---------- period / reports ---------- */
+  periodeRange(){
+    const today=this.journeeToday();
+    if(this.state.periode==="jour") return [today,today];
+    if(this.state.periode==="7j"){ const d=new Date(today+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()-6); return [this.isoDate(d),today]; }
+    return [this.state.customFrom||today,this.state.customTo||today];
+  }
+  encPeriode(){ const [a,b]=this.periodeRange(); return this.encActifs().filter(e=>e.date_operation>=a&&e.date_operation<=b).sort((x,y)=>y.horodatage_saisie.localeCompare(x.horodatage_saisie)); }
+  totaux(list){
+    const t={n:list.length,rec:0,part:0,dc:0,dp:0,av:0,au:0,nette:0};
+    list.forEach(e=>{ t.rec+=e.recette_lavage;t.part+=e.part_laveur;t.dc+=e.dette_contractee;t.dp+=e.dette_payee;t.av+=e.avance_versee;t.au+=e.avance_utilisee;t.nette+=e.recette_nette; });
+    return t;
+  }
+
+  dl(name,blob){ const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }
+  xls(filename,sheets){
+    const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    let x='<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n';
+    x+='<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">';
+    x+='<Styles><Style ss:ID="hd"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#12295C" ss:Pattern="Solid"/></Style><Style ss:ID="tot"><Font ss:Bold="1"/><Interior ss:Color="#E4E8F0" ss:Pattern="Solid"/></Style></Styles>';
+    sheets.forEach(sh=>{
+      x+='<Worksheet ss:Name="'+esc(sh.name)+'"><Table>';
+      sh.rows.forEach((row,ri)=>{
+        const style=ri===0?' ss:StyleID="hd"':(row._tot?' ss:StyleID="tot"':"");
+        x+='<Row'+(row._tot?' ss:StyleID="tot"':(ri===0?' ss:StyleID="hd"':""))+'>';
+        (row.cells||row).forEach(c=>{
+          const num=typeof c==="number";
+          x+='<Cell'+style+'><Data ss:Type="'+(num?"Number":"String")+'">'+esc(num?c:(c==null?"":c))+'</Data></Cell>';
+        });
+        x+='</Row>';
+      });
+      x+='<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane></WorksheetOptions>';
+      x+='</Table></Worksheet>';
+    });
+    x+='</Workbook>';
+    this.dl(filename,new Blob([x],{type:"application/vnd.ms-excel"}));
+    this.toast("Fichier généré — menu de partage sur mobile");
+  }
+  exportJournalier(){
+    const [a]=this.periodeRange(); const list=this.encActifs().filter(e=>e.date_operation===a).sort((x,y)=>x.horodatage_saisie.localeCompare(y.horodatage_saisie));
+    const t=this.totaux(list); const db=this.state.db;
+    const detail=[["Heure","Immatriculation","Chauffeur","Prestation","Recette","Laveur","Part laveur","Dette contractée","Dette payée","Avance utilisée","Avance versée","Recette nette","Note"]];
+    list.forEach(e=>{ const v=db.vehicule.find(x=>x.id===e.vehicule_id)||{},p=db.prestation.find(x=>x.id===e.prestation_id)||{},l=db.agent.find(x=>x.id===e.laveur_agent_id)||{};
+      detail.push([this.heure(e.horodatage_saisie),v.immatriculation||"",v.chauffeur||"",p.libelle||"",e.recette_lavage,(l.nom||"")+" "+(l.prenom||""),e.part_laveur,e.dette_contractee,e.dette_payee,e.avance_utilisee,e.avance_versee,e.recette_nette,e.note||""]); });
+    detail.push({_tot:true,cells:["TOTAUX","","","",t.rec,"",t.part,t.dc,t.dp,t.au,t.av,t.nette,""]});
+    const syn=[["GFM Services — Synthèse journalière"],["Journée",this.frDateLong(a)],[""],["Voitures",t.n],["Recette brute",t.rec],["Part laveurs",t.part],["Dettes contractées",t.dc],["Dettes payées",t.dp],["Avances versées",t.av],["Avances utilisées",t.au],["Recette nette",t.nette]];
+    this.xls("GFM_Journalier_"+a.split("-").reverse().join("-")+".xls",[{name:"Synthèse",rows:syn},{name:"Détail",rows:detail}]);
+  }
+  exportMensuel(){
+    const map={}; this.encActifs().forEach(e=>{ const m=e.date_operation.slice(0,7); (map[m]=map[m]||[]).push(e); });
+    const detail=[["Mois","Nb voitures","Recette brute","Part laveurs","Dettes contractées","Dettes payées","Avances versées","Avances utilisées","Recette nette"]];
+    const g={n:0,rec:0,part:0,dc:0,dp:0,av:0,au:0,nette:0};
+    Object.keys(map).sort().forEach(m=>{ const t=this.totaux(map[m]); ["n","rec","part","dc","dp","av","au","nette"].forEach(k=>g[k]+=t[k]);
+      detail.push([MOISL[parseInt(m.slice(5),10)-1]+" "+m.slice(0,4),t.n,t.rec,t.part,t.dc,t.dp,t.av,t.au,t.nette]); });
+    detail.push({_tot:true,cells:["TOTAL",g.n,g.rec,g.part,g.dc,g.dp,g.av,g.au,g.nette]});
+    const syn=[["GFM Services — Synthèse mensuelle"],[""],["Recette nette totale",g.nette],["Recette brute",g.rec],["Part laveurs",g.part]];
+    this.xls("GFM_Mensuel_"+this.journeeToday().slice(0,7).split("-").reverse().join("-")+".xls",[{name:"Synthèse",rows:syn},{name:"Détail",rows:detail}]);
+  }
+  exportDettesClients(){
+    const db=this.state.db; const rows=db.vehicule.filter(v=>v.actif===1).map(v=>{
+      let dc=0,dp=0,last=""; this.encActifs().forEach(e=>{ if(e.vehicule_id===v.id){ dc+=e.dette_contractee;dp+=e.dette_payee; if(e.date_operation>last&&(e.dette_contractee||e.dette_payee))last=e.date_operation; } });
+      return {v,solde:v.dette_ouverture+dc-dp,dc,dp,last};
+    }).filter(r=>r.solde!==0).sort((a,b)=>b.solde-a.solde);
+    const detail=[["Immatriculation","Chauffeur","Téléphone","Solde d'ouverture","Dettes contractées","Dettes payées","Solde dû","Dernier mouvement"]];
+    let tot=0; rows.forEach(r=>{ tot+=r.solde; detail.push([r.v.immatriculation,r.v.chauffeur,r.v.telephone||"",r.v.dette_ouverture,r.dc,r.dp,r.solde,r.last?this.frDate(r.last):"—"]); });
+    detail.push({_tot:true,cells:["TOTAL","","","","","",tot,""]});
+    this.xls("GFM_Dettes_Clients_"+this.journeeToday().split("-").reverse().join("-")+".xls",[{name:"Synthèse",rows:[["GFM Services — Dettes clients"],["Total dû",tot]]},{name:"Détail",rows:detail}]);
+  }
+  exportDettesPerso(){
+    const db=this.state.db; const detail=[["Agent","Fonction","Téléphone","Solde d'ouverture","Total dettes","Total remboursements","Solde dû"]]; let tot=0;
+    db.agent.filter(a=>a.actif===1).forEach(a=>{ let d=0,r=0; db.mouvement_dette_personnel.filter(m=>m.supprime===0&&m.agent_id===a.id).forEach(m=>{ if(m.type==="DETTE")d+=m.montant;else r+=m.montant; });
+      const solde=a.dette_ouverture+d-r; tot+=solde; detail.push([(a.nom+" "+(a.prenom||"")).trim(),a.fonction||"",a.telephone||"",a.dette_ouverture,d,r,solde]); });
+    detail.push({_tot:true,cells:["TOTAL","","","","","",tot]});
+    this.xls("GFM_Dettes_Personnel_"+this.journeeToday().split("-").reverse().join("-")+".xls",[{name:"Synthèse",rows:[["GFM Services — Dettes du personnel"],["Total à retenir",tot]]},{name:"Détail",rows:detail}]);
+  }
+
+  /* ---------- backup / restore ---------- */
+  async sha256(str){
+    try{ if(crypto&&crypto.subtle){ const b=new TextEncoder().encode(str); const d=await crypto.subtle.digest("SHA-256",b); return Array.from(new Uint8Array(d)).map(x=>x.toString(16).padStart(2,"0")).join(""); } }catch(e){}
+    // repli déterministe (contexte non sécurisé) : double FNV-1a
+    let h1=0x811c9dc5,h2=0x01000193; for(let i=0;i<str.length;i++){ const c=str.charCodeAt(i); h1=Math.imul(h1^c,16777619)>>>0; h2=Math.imul(h2^c,2246822519)>>>0; }
+    return (h1>>>0).toString(16).padStart(8,"0")+(h2>>>0).toString(16).padStart(8,"0");
+  }
+  serialDet(donnees){
+    const sortKeys=o=>{ const r={}; Object.keys(o).sort().forEach(k=>r[k]=o[k]); return r; };
+    const out={}; TABLES.forEach(t=>{ out[t]=(donnees[t]||[]).slice().sort((a,b)=>(a.id||0)-(b.id||0)).map(sortKeys); });
+    return JSON.stringify(out);
+  }
+  async doBackup(){
+    const db=this.state.db; const donnees={}; TABLES.forEach(t=>donnees[t]=db[t]);
+    const ser=this.serialDet(donnees); const emp=await this.sha256(ser);
+    const dates=this.encActifs().map(e=>e.date_operation).sort();
+    const file={format:"GFM_SAUVEGARDE",version_format:1,version_schema:1,version_application:this.param("version_application")||"1.0.0",
+      genere_le:this.nowIso(),fuseau:"Africa/Brazzaville",appareil_origine:"Chef de site",empreinte:emp,
+      totaux_controle:{nb_vehicule:db.vehicule.length,nb_prestation:db.prestation.length,nb_agent:db.agent.length,nb_encaissement:db.encaissement.length,nb_mouvement_dette_personnel:db.mouvement_dette_personnel.length,nb_journal_audit:db.journal_audit.length,somme_recette_nette:this.encActifs().reduce((a,e)=>a+e.recette_nette,0),somme_recette_lavage:this.encActifs().reduce((a,e)=>a+e.recette_lavage,0),date_premiere_operation:dates[0]||"",date_derniere_operation:dates[dates.length-1]||""},
+      donnees};
+    const b=this.bzNow(); const stamp=this.isoDate(b)+"_"+String(b.getUTCHours()).padStart(2,"0")+String(b.getUTCMinutes()).padStart(2,"0");
+    this.dl("GFM_Sauvegarde_"+stamp+".gfmbak",new Blob([JSON.stringify(file,null,2)],{type:"application/json"}));
+    this.setParam("derniere_sauvegarde",this.nowIso()); this.commit();
+    this.toast("Sauvegarde générée ("+db.encaissement.length+" écritures)");
+  }
+  async pickRestore(file){
+    try{
+      const txt=await file.text(); const data=JSON.parse(txt);
+      if(data.format!=="GFM_SAUVEGARDE"){ this.toast("Fichier non reconnu"); return; }
+      if((data.version_format||1)>1){ this.toast("Version de fichier trop récente — mettez à jour l'application"); return; }
+      const emp=await this.sha256(this.serialDet(data.donnees));
+      if(emp!==data.empreinte){ this.openConfirm({title:"Intégrité en défaut",message:"L'empreinte du fichier ne correspond pas. La restauration est refusée pour protéger vos données.",okLabel:"Fermer",onOk:()=>this.setState({confirm:null})}); return; }
+      this.setState({restoreData:data,restoreStep:1,restoreWord:""});
+    }catch(e){ this.toast("Lecture impossible : "+e.message); }
+  }
+  execRestore(){
+    const data=this.state.restoreData; const db=this.state.db;
+    // safety backup
+    this.doBackup();
+    TABLES.forEach(t=>{ db[t]=(data.donnees[t]||[]).slice(); });
+    db.seq=db.seq||{}; TABLES.forEach(t=>{ let mx=0; db[t].forEach(r=>{ if(r.id>mx)mx=r.id; }); db.seq[t]=mx; });
+    this.persist();
+    this.setState(s=>({rev:s.rev+1,restoreStep:null,restoreData:null,restoreWord:""}));
+    const t=data.totaux_controle;
+    this.openConfirm({title:"Restauration réussie",message:t.nb_encaissement+" encaissements restaurés, du "+this.frDateLong(t.date_premiere_operation)+" au "+this.frDateLong(t.date_derniere_operation)+". Toutes les vérifications sont conformes.",okLabel:"Parfait",onOk:()=>this.setState({confirm:null,view:"accueil",stack:[]})});
+  }
+
+  /* ---------- UI atoms ---------- */
+  icon(name,size,color){
+    const p={width:size,height:size,viewBox:"0 0 24 24",fill:"none",stroke:color||"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"};
+    const paths={
+      accueil:["M3 10.7 12 3l9 7.7","M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"],
+      saisies:["M8 6h11","M8 12h11","M8 18h11","M3.5 6h.01","M3.5 12h.01","M3.5 18h.01"],
+      rapports:["M4 20V10","M10 20V4","M16 20v-7","M22 20H2"],
+      plus:["M4 6h16","M4 12h16","M4 18h16"],
+      back:["M15 5l-7 7 7 7"],
+      car:["M5 13l1.5-4.5A2 2 0 0 1 8.4 7h7.2a2 2 0 0 1 1.9 1.5L19 13","M5 13h14v4H5z","M7 17v2","M17 17v2"],
+      wallet:["M3 7h15a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a1 1 0 0 1-1-1z","M16 12h.01","M3 7V6a2 2 0 0 1 2-2h11"],
+      user:["M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z","M4 21a8 8 0 0 1 16 0"],
+      save:["M5 3h11l3 3v15H5z","M8 3v5h7","M8 21v-6h8v6"],
+      gear:["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z","M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.3-2.5H9.4l-.3 2.5a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.3 2.5h5.2l.3-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5A7 7 0 0 0 19 12z"],
+      plusc:["M12 5v14","M5 12h14"],
+      trash:["M4 7h16","M9 7V5h6v2","M6 7l1 13h10l1-13"],
+      edit:["M4 20h4L18 10l-4-4L4 16z","M13.5 6.5l4 4"],
+      list:["M8 6h12","M8 12h12","M8 18h12","M3 6h.01","M3 12h.01","M3 18h.01"],
+      check:["M5 12l5 5 9-11"],
+      shield:["M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"],
+      doc:["M6 3h8l5 5v13H6z","M14 3v5h5"],
+      clock:["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z","M12 8v4l3 2"],
+      phone:["M6.5 3h3l1.5 4.5-2 1.5a11 11 0 0 0 5 5l1.5-2 4.5 1.5v3a2 2 0 0 1-2 2A16 16 0 0 1 4.5 5a2 2 0 0 1 2-2z"],
+      logout:["M14 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4","M10 8l-4 4 4 4","M6 12h10"]
+    };
+    return h("svg",p,(paths[name]||[]).map((d,i)=>h("path",{key:i,d})));
+  }
+  btn(label,onClick,o){ o=o||{}; const bg=o.variant==="ghost"?"transparent":o.variant==="amber"?"var(--amber)":o.variant==="red"?"var(--red)":o.variant==="green"?"var(--green)":o.variant==="outline"?"var(--surface)":"var(--blue)";
+    const col=o.variant==="ghost"?"var(--bluet)":o.variant==="outline"?"var(--navy)":"#fff";
+    return h("button",{onClick,disabled:o.disabled,className:"press",style:{minHeight:o.big?48:44,padding:o.big?"0 20px":"0 16px",borderRadius:10,background:o.disabled?"#B9C2D4":bg,color:o.disabled?"#fff":col,fontWeight:700,fontSize:o.big?16:15,border:o.variant==="outline"?"1.5px solid var(--line)":"none",width:o.full?"100%":"auto",display:"flex",alignItems:"center",justifyContent:"center",gap:8}},o.icon?this.icon(o.icon,18):null,label); }
+  card(children,style){ return h("div",{style:{background:"var(--surface)",borderRadius:"var(--r)",border:"1px solid var(--line)",padding:16,...(style||{})}},children); }
+  hdr(title,o){ o=o||{}; return h("div",{style:{background:o.plain?"var(--surface)":"var(--navy)",color:o.plain?"var(--navy)":"#fff",padding:"14px 14px",paddingTop:"max(18px,env(safe-area-inset-top))",display:"flex",alignItems:"center",gap:10,flex:"none",borderBottom:o.plain?"1px solid var(--line)":"none",minHeight:60}},
+    o.back!==false?h("button",{className:"press",onClick:()=>this.back(),style:{width:40,height:40,marginLeft:-6,display:"grid",placeItems:"center",color:"inherit"}},this.icon("back",24)):null,
+    h("div",{style:{fontSize:20,fontWeight:700,flex:1}},title),o.right); }
+
+  /* ---------- MAIN ---------- */
+  renderVals(){ return {app:this.renderApp()}; }
+  renderApp(){
+    const cadre=(this.props||{}).afficherCadre ?? true;
+    const phone=h("div",{style:{position:"relative",width:cadre?412:"100%",height:cadre?"min(880px,96dvh)":"100dvh",maxWidth:"100%",background:"var(--bg)",overflow:"hidden",borderRadius:cadre?36:0,boxShadow:cadre?"0 24px 70px rgba(0,0,0,.4)":"none",border:cadre?"10px solid #0b0e14":"none",display:"flex",flexDirection:"column"}},
+      this.state.locked?this.renderLock():this.renderShell(),
+      this.state.keypad?this.renderKeypad():null,
+      (!this.state.locked&&this.state.idleWarn)?this.renderIdle():null,
+      this.state.datePick?this.renderDatePick():null,
+      this.state.confirm?this.renderConfirm():null,
+      this.state.restoreStep?this.renderRestore():null,
+      this.state.undo?this.renderUndo():null,
+      this.state.toast?this.renderToast():null);
+    return h("div",{style:{minHeight:"100dvh",width:"100%",background:cadre?"radial-gradient(circle at 50% 0%,#2b3446,#12151d)":"var(--bg)",display:"flex",alignItems:cadre?"center":"stretch",justifyContent:"center",padding:cadre?"16px 0":0}},phone);
+  }
+  renderLock(){
+    const dots=[0,1,2,3].map(i=>h("div",{key:i,style:{width:16,height:16,borderRadius:"50%",background:i<this.state.codeBuf.length?"var(--navy)":"#fff",border:"2px solid var(--navy)"}}));
+    const press=d=>{ let b=this.state.codeBuf; if(d==="del") b=b.slice(0,-1); else if(b.length<4) b=b+d; this.setState({codeBuf:b}); if(b.length===4){ setTimeout(()=>{ if(this.djb2(b)===this.param("code_verrouillage_hash")){ this._lastActivity=Date.now(); this.setState({locked:false,codeBuf:"",idleWarn:false}); } else { this.toast("Code incorrect"); this.setState({codeBuf:""}); } },120); } };
+    const keys=["1","2","3","4","5","6","7","8","9","","0","del"];
+    return h("div",{className:"scr",style:{position:"absolute",inset:0,background:"var(--surface)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"24px 24px",overflowY:"auto",animation:"gfmFade .2s"}},
+      h("img",{src:"assets/logo_gfm.png",style:{width:130,height:130,objectFit:"contain",flex:"none"}}),
+      h("div",{style:{fontSize:22,fontWeight:800,color:"var(--navy)",marginTop:-4}},"GFM Lavage"),
+      h("div",{style:{color:"var(--muted)",marginTop:4,marginBottom:20,fontSize:15}},"Entrez votre code d'accès"),
+      h("div",{style:{display:"flex",gap:16,marginBottom:24,flex:"none"}},dots),
+      h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,72px)",gap:14}},keys.map((k,i)=>k===""?h("div",{key:i}):h("button",{key:i,className:"press",onClick:()=>press(k),style:{height:72,borderRadius:"50%",background:k==="del"?"transparent":"var(--bg)",fontSize:k==="del"?22:26,fontWeight:700,color:"var(--navy)",display:"grid",placeItems:"center"}},k==="del"?"⌫":k))),
+      h("div",{style:{marginTop:26,fontSize:13,color:"var(--muted)"}},"Code de démonstration : 0000"),
+      h("div",{style:{marginTop:8,fontSize:12.5,color:"var(--muted)",textAlign:"center"}},"Lavage GFM · 06 110 71 71 · 05 333 71 71"));
+  }
+  renderShell(){
+    const v=this.state.view;
+    const main=["accueil","saisies","rapports","plus"].includes(v);
+    const views={accueil:()=>this.vAccueil(),saisies:()=>this.vSaisies(),rapports:()=>this.vRapports(),plus:()=>this.vPlus(),saisie:()=>this.vSaisie(),vehicules:()=>this.vVehicules(),"vehicule-form":()=>this.vVehForm(),"vehicule-histo":()=>this.vVehHisto(),prestations:()=>this.vPrestations(),"prestation-form":()=>this.vPrestForm(),agents:()=>this.vAgents(),"agent-form":()=>this.vAgentForm(),"dettes-perso":()=>this.vDettesPerso(),"mdp-form":()=>this.vMdpForm(),paie:()=>this.vPaie(),rapport:()=>this.vRapport(),sauvegarde:()=>this.vSauvegarde(),reglages:()=>this.vReglages(),audit:()=>this.vAudit(),apropos:()=>this.vApropos()};
+    return h(F,null,
+      h("div",{style:{position:"absolute",inset:0,display:"flex",flexDirection:"column"}},(views[v]||views.accueil)()),
+      main?this.renderNav():null,
+      (v==="saisies")?this.renderFab():null);
+  }
+  renderNav(){
+    const items=[["accueil","Accueil"],["saisies","Saisies"],["rapports","Rapports"],["plus","Plus"]];
+    return h("div",{style:{position:"absolute",left:0,right:0,bottom:0,minHeight:64,paddingBottom:"env(safe-area-inset-bottom)",background:"var(--surface)",borderTop:"1px solid var(--line)",display:"flex",zIndex:20}},
+      items.map(([k,l])=>{ const on=this.state.view===k; return h("button",{key:k,className:"press",onClick:()=>this.tab(k),style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,color:on?"var(--blue)":"var(--muted)"}},this.icon(k,24,on?"var(--blue)":"var(--muted)"),h("span",{style:{fontSize:11,fontWeight:on?700:500}},l)); }));
+  }
+  renderFab(){
+    return h("button",{className:"press",title:"Nouvel encaissement","aria-label":"Nouvel encaissement",onClick:()=>this.openSaisie(null),style:{position:"absolute",right:16,bottom:"calc(76px + env(safe-area-inset-bottom))",width:52,height:52,borderRadius:26,background:"var(--blue)",color:"#fff",display:"grid",placeItems:"center",boxShadow:"0 6px 18px rgba(22,104,207,.4)",zIndex:21}},this.icon("plusc",26));
+  }
+
+  /* ---------- ACCUEIL ---------- */
+  vAccueil(){
+    const today=this.journeeToday();
+    const encJour=this.encActifs().filter(e=>e.date_operation===today);
+    const ap=this.state.accPeriode;
+    let aFrom=today,aTo=today,aLabel="du jour · "+this.frDateLong(today);
+    if(ap==="mois"){ aFrom=today.slice(0,7)+"-01"; aTo=today; aLabel="du mois · "+MOISL[parseInt(today.slice(5,7),10)-1]+" "+today.slice(0,4); }
+    else if(ap==="perso"){ aFrom=this.state.accFrom||today; aTo=this.state.accTo||today; aLabel="· "+this.frDate(aFrom)+" → "+this.frDate(aTo); }
+    const encSel=this.encActifs().filter(e=>e.date_operation>=aFrom&&e.date_operation<=aTo);
+    const t=this.totaux(encSel);
+    const detClients=this.state.db.vehicule.filter(v=>v.actif===1).reduce((a,v)=>a+Math.max(0,this.soldeDette(v.id)),0);
+    const detPerso=this.state.db.agent.filter(a=>a.actif===1).reduce((a,ag)=>a+Math.max(0,this.detteAgent(ag.id)),0);
+    const avances=this.state.db.vehicule.filter(v=>v.actif===1).reduce((a,v)=>a+Math.max(0,this.soldeAvance(v.id)),0);
+    const dettesEncaissees=encJour.reduce((a,e)=>a+e.dette_payee,0);
+    const ds=this.param("derniere_sauvegarde");
+    const vieux=!ds||(Date.now()-new Date(ds).getTime())>7*864e5;
+    const stat=(label,val,color,onClick)=>h("button",{className:"press",onClick,style:{flex:1,textAlign:"left",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:"var(--r)",padding:"12px 12px",minHeight:84}},h("div",{style:{fontSize:12,color:"var(--muted)",fontWeight:600,lineHeight:1.2,minHeight:28}},label),h("div",{className:"mono",style:{fontSize:17,fontWeight:800,color,marginTop:6}},this.fmt(val)));
+    return h(F,null,
+      h("div",{style:{background:"var(--navy)",color:"#fff",padding:"20px 18px 22px",paddingTop:"max(20px,env(safe-area-inset-top))",flex:"none"}},
+        h("div",{style:{display:"flex",alignItems:"center",gap:10}},h("img",{src:"assets/logo_gfm.png",style:{width:34,height:34,objectFit:"contain",background:"#fff",borderRadius:8,padding:2}}),h("div",{style:{fontSize:15,fontWeight:700,opacity:.85,flex:1}},"GFM Lavage"),
+          vieux?h("button",{className:"press",onClick:()=>this.nav("sauvegarde"),style:{display:"flex",alignItems:"center",gap:7,background:"rgba(255,209,143,.16)",border:"1px solid rgba(255,209,143,.5)",color:"#FFD28F",borderRadius:20,padding:"7px 12px",fontWeight:700,fontSize:12.5}},this.icon("shield",16,"#FFD28F"),"Sauvegarde à faire"):null,
+          h("button",{className:"press",title:"Se déconnecter","aria-label":"Se déconnecter",onClick:()=>this.openConfirm({title:"Se déconnecter ?",message:"L'application sera verrouillée. Vos données restent enregistrées sur l'appareil.",okLabel:"Se déconnecter",onOk:()=>this.setState({confirm:null,locked:true,codeBuf:"",view:"accueil",stack:[]})}),style:{width:38,height:38,borderRadius:19,display:"grid",placeItems:"center",background:"rgba(255,255,255,.12)",color:"#fff",flex:"none"}},this.icon("logout",20,"#fff"))),
+        h("div",{style:{display:"flex",gap:7,marginTop:16,marginBottom:2}},[["jour","Jour"],["mois","Mois"],["perso","Période"]].map(([k,l])=>{ const on=ap===k; return h("button",{key:k,className:"press",onClick:()=>this.setState({accPeriode:k}),style:{padding:"6px 14px",borderRadius:16,fontWeight:700,fontSize:12.5,background:on?"#fff":"rgba(255,255,255,.12)",color:on?"var(--navy)":"#fff",border:"none"}},l); })),
+        ap==="perso"?h("div",{style:{display:"flex",gap:8,marginTop:10}},
+          h("input",{type:"date",value:this.state.accFrom||today,max:today,onChange:e=>this.setState({accFrom:e.target.value}),style:{flex:1,padding:8,border:"none",borderRadius:8,background:"rgba(255,255,255,.15)",color:"#fff",fontSize:13}}),
+          h("input",{type:"date",value:this.state.accTo||today,max:today,onChange:e=>this.setState({accTo:e.target.value}),style:{flex:1,padding:8,border:"none",borderRadius:8,background:"rgba(255,255,255,.15)",color:"#fff",fontSize:13}})):null,
+        h("div",{style:{fontSize:13,opacity:.75,marginTop:12}},"Recette nette "+aLabel),
+        h("div",{className:"mono",style:{fontSize:40,fontWeight:800,marginTop:2,color:t.nette<0?"#ff8f88":"#fff"}},this.fmt(t.nette)),
+        h("div",{style:{fontSize:13,opacity:.8,marginTop:6}},"Brute "+this.fmt(t.rec)+" · Part laveurs "+this.fmt(t.part)+" · "+t.n+" voiture"+(t.n>1?"s":""))),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16,paddingBottom:150}},
+        h("div",{style:{display:"flex",gap:10,marginBottom:12}},
+          stat("Dettes clients",detClients,"var(--red)",()=>this.nav("rapport",{})||this.setState({rapportKind:"dettes-clients"},()=>this.nav("rapport"))),
+          stat("Dettes personnel",detPerso,"var(--amber)",()=>this.setState({rapportKind:"dettes-perso"},()=>this.nav("rapport")))),
+        h("div",{style:{display:"flex",gap:10,marginBottom:14}},
+          stat("Avances disponibles",avances,"var(--green)",()=>this.tab("plus")),
+          stat("Dettes encaissées (jour)",dettesEncaissees,"var(--bluet)",()=>this.tab("saisies"))),
+        h("div",{style:{fontSize:13,fontWeight:700,color:"var(--muted)",margin:"6px 2px 10px"}},"ACCÈS RAPIDES"),
+        h("div",{style:{display:"flex",gap:10}},
+          this.quick("saisies","Fiche du jour"),this.quick("vehicules","Véhicules"),this.quick("rapports","Rapports"))));
+  }
+  quick(target,label){ const map={vehicules:()=>this.nav("vehicules"),saisies:()=>this.tab("saisies"),rapports:()=>this.tab("rapports")}; const ic={vehicules:"car",saisies:"list",rapports:"rapports"};
+    return h("button",{className:"press",onClick:map[target],style:{flex:1,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:"var(--r)",padding:"16px 8px",display:"flex",flexDirection:"column",alignItems:"center",gap:8,color:"var(--navy)"}},this.icon(ic[target],26,"var(--blue)"),h("span",{style:{fontSize:12.5,fontWeight:600}},label)); }
+
+  /* ---------- SAISIES (fiche) ---------- */
+  vSaisies(){
+    const list=this.encPeriode(); const t=this.totaux(list); const db=this.state.db;
+    const pill=(k,l)=>h("button",{key:k,className:"press",onClick:()=>this.setState({periode:k}),style:{padding:"8px 14px",borderRadius:20,fontWeight:700,fontSize:13,background:this.state.periode===k?"var(--navy)":"var(--surface)",color:this.state.periode===k?"#fff":"var(--navy)",border:"1px solid var(--line)"}},l);
+    return h(F,null,
+      this.hdr("Fiche des saisies",{back:false}),
+      h("div",{style:{flex:"none",padding:"10px 14px",display:"flex",gap:8,background:"var(--surface)",borderBottom:"1px solid var(--line)"}},pill("jour","Aujourd'hui"),pill("7j","7 jours"),pill("perso","Personnalisé")),
+      this.state.periode==="perso"?h("div",{style:{flex:"none",display:"flex",gap:8,padding:"10px 14px",background:"var(--surface)",borderBottom:"1px solid var(--line)"}},
+        h("input",{type:"date",value:this.state.customFrom,onChange:e=>this.setState({customFrom:e.target.value}),style:{flex:1,padding:10,border:"1px solid var(--line)",borderRadius:8}}),
+        h("input",{type:"date",value:this.state.customTo,onChange:e=>this.setState({customTo:e.target.value}),style:{flex:1,padding:10,border:"1px solid var(--line)",borderRadius:8}})):null,
+      h("div",{style:{flex:"none",background:"#EEF2FA",padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid var(--line)"}},
+        h("div",{style:{fontSize:12.5,color:"var(--muted)",fontWeight:600}},t.n+" écriture"+(t.n>1?"s":"")+" · brute "+this.fmtN(t.rec)),
+        h("div",{className:"mono",style:{fontSize:18,fontWeight:800,color:t.nette<0?"var(--red)":"var(--navy)"}},this.fmt(t.nette))),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",paddingBottom:150}},
+        list.length===0?h("div",{style:{textAlign:"center",color:"var(--muted)",padding:40,fontSize:14}},"Aucune écriture sur cette période."):
+        list.map(e=>{ const v=db.vehicule.find(x=>x.id===e.vehicule_id)||{},p=db.prestation.find(x=>x.id===e.prestation_id)||{};
+          const bord=e.avance_versee||e.avance_utilisee?"var(--green)":(e.dette_contractee||e.dette_payee?"var(--amber)":"var(--blue)");
+          return h("button",{key:e.id,className:"press",onClick:()=>this.openSaisie(e.id),style:{width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:"var(--surface)",borderBottom:"1px solid var(--line)",borderLeft:"4px solid "+bord}},
+            h("div",{style:{flex:1,minWidth:0}},
+              h("div",{style:{fontWeight:700,fontSize:15,color:"var(--navy)"}},v.immatriculation||"—"),
+              h("div",{style:{fontSize:12.5,color:"var(--muted)",marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}},this.heure(e.horodatage_saisie)+" · "+(p.libelle||"")+(e.dette_contractee?" · dette "+this.fmtN(e.dette_contractee):"")+(e.avance_versee?" · avance "+this.fmtN(e.avance_versee):"")+(e.dette_payee?" · remb. "+this.fmtN(e.dette_payee):""))),
+            h("div",{className:"mono",style:{fontWeight:800,fontSize:15,color:e.recette_nette<0?"var(--red)":"var(--text)"}},this.fmtN(e.recette_nette))); })));
+  }
+
+  /* ---------- SAISIE FORM ---------- */
+  vSaisie(){
+    if(this.state.saved) return this.vSaisieSaved();
+    const sf=this.state.sf; const db=this.state.db;
+    const veh=db.vehicule.find(v=>v.id===sf.vehicule_id);
+    const prest=db.prestation.find(p=>p.id===sf.prestation_id);
+    const rec=prest?prest.montant:0;
+    const soldeD=veh?this.soldeDette(veh.id):0, soldeA=veh?this.soldeAvance(veh.id):0;
+    const s={recetteLavage:rec,partLaveur:sf.partLaveur,detteContractee:sf.detteContractee,dettePayee:sf.dettePayee,avanceUtilisee:sf.avanceUtilisee,avanceVersee:sf.avanceVersee};
+    const nette=this.calc(s);
+    const errors=this.controle(s,soldeD,soldeA);
+    const comptant=Math.max(0,rec-sf.detteContractee-sf.avanceUtilisee);
+    const can=veh&&prest&&errors.length===0;
+    const doubleAlert=veh&&prest&&!sf.editId&&this.encActifs().some(e=>e.vehicule_id===veh.id&&e.recette_lavage===rec&&(Date.now()-new Date(e.horodatage_saisie).getTime())<120000);
+    const laveurs=db.agent.filter(a=>a.actif===1&&a.fonction==="Laveur");
+    const results=veh?[]:this.vehResults();
+    const noMatch=!veh&&this.state.sf.vehSearch.trim().length>=2&&results.length===0;
+    const sect=(n,title,body)=>h("div",{style:{marginBottom:14}},h("div",{style:{fontSize:12.5,fontWeight:800,color:"var(--muted)",margin:"0 2px 8px",letterSpacing:.3}},n+" — "+title),body);
+    return h(F,null,
+      this.hdr(sf.editId?"Modifier l'encaissement":"Nouvel encaissement"),
+      h("div",{style:{flex:"none",background:nette<0?"#FBE9E7":"var(--navy)",color:nette<0?"var(--red)":"#fff",padding:"14px 18px",textAlign:"center"}},
+        h("div",{style:{fontSize:12,opacity:.8,fontWeight:600}},"Recette nette de cette saisie"),
+        h("div",{className:"mono",style:{fontSize:36,fontWeight:800,lineHeight:1.1}},this.fmt(nette)),
+        nette<0?h("div",{style:{fontSize:12,fontWeight:700,marginTop:2}},"Aucune entrée en caisse pour cette saisie"):null),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16,paddingBottom:96}},
+        this.dateSection(sf),
+        sect("1","Véhicule",h("div",null,
+          h("input",{value:sf.vehSearch,placeholder:"Rechercher une immatriculation…",onChange:e=>this.setSF({vehSearch:e.target.value,vehicule_id:null}),style:{width:"100%",padding:"14px 14px",fontSize:16,border:"1.5px solid var(--line)",borderRadius:"var(--r)",background:"var(--surface)"}}),
+          veh?h("div",{style:{marginTop:8,background:"#EEF2FA",borderRadius:"var(--r)",padding:12}},
+            h("div",{style:{fontWeight:700,color:"var(--navy)"}},veh.immatriculation+" · "+veh.chauffeur),
+            h("div",{style:{fontSize:13,marginTop:4,color:"var(--muted)"}},"Dette : ",h("b",{style:{color:soldeD>0?"var(--red)":"var(--text)"}},this.fmt(soldeD)),"  ·  Avance : ",h("b",{style:{color:soldeA>0?"var(--green)":"var(--text)"}},this.fmt(soldeA))),
+            h("button",{className:"press",onClick:()=>this.setSF({vehicule_id:null,vehSearch:""}),style:{marginTop:6,fontSize:13,color:"var(--bluet)",fontWeight:700}},"Changer de véhicule")):
+          h("div",{style:{marginTop:8}},
+            results.map(v=>h("button",{key:v.id,className:"press",onClick:()=>this.selectVeh(v),style:{width:"100%",textAlign:"left",padding:"12px 14px",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:10,marginBottom:6}},h("b",{style:{color:"var(--navy)"}},v.immatriculation),h("span",{style:{color:"var(--muted)"}},"  "+v.chauffeur))),
+            noMatch?this.btn("+ Créer ce véhicule",()=>this.nav("vehicule-form",{prefill:this.state.sf.vehSearch,fromSaisie:true}),{variant:"outline",full:true}):null))),
+        sect("2","Prestation",h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}},
+          db.prestation.filter(p=>p.actif===1).sort((a,b)=>a.ordre-b.ordre).map(p=>{ const on=sf.prestation_id===p.id;
+            return h("button",{key:p.id,className:"press",onClick:()=>this.selectPrest(p),style:{minHeight:64,padding:"12px",borderRadius:"var(--r)",textAlign:"left",background:on?"var(--blue)":"var(--surface)",color:on?"#fff":"var(--navy)",border:"1.5px solid "+(on?"var(--blue)":"var(--line)")}},h("div",{style:{fontWeight:700,fontSize:14.5}},p.libelle),h("div",{className:"mono",style:{fontSize:14,fontWeight:800,marginTop:4,opacity:on?1:.85}},this.fmtN(p.montant)+" FCFA")); }))),
+        prest?sect("3","Part laveur",h("div",null,
+          h("button",{className:"press",onClick:()=>this.openKeypad({title:"Part laveur",value:sf.partLaveur,max:rec,onCommit:v=>this.setSF({partLaveur:v})}),style:{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 16px",background:"var(--surface)",border:"1.5px solid var(--line)",borderRadius:"var(--r)"}},h("span",{style:{color:"var(--muted)",fontSize:14}},"Montant reversé"),h("span",{className:"mono",style:{fontWeight:800,fontSize:18,color:"var(--navy)"}},this.fmt(sf.partLaveur))),
+          h("div",{style:{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}},laveurs.map(a=>{ const on=sf.laveur_agent_id===a.id; return h("button",{key:a.id,className:"press",onClick:()=>this.setSF({laveur_agent_id:a.id}),style:{padding:"8px 12px",borderRadius:20,fontSize:13,fontWeight:700,background:on?"var(--navy)":"var(--surface)",color:on?"#fff":"var(--navy)",border:"1px solid var(--line)"}},(a.prenom||a.nom)); })))):null,
+        prest?h("div",{style:{marginBottom:14}},
+          soldeA>0?h("div",{style:{background:"#E6F4EC",border:"1px solid #B7DFC6",borderRadius:"var(--r)",padding:12,marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}},
+            h("div",null,h("div",{style:{color:"var(--green)",fontWeight:700,fontSize:14}},"Avance disponible : "+this.fmt(soldeA)),h("div",{style:{fontSize:12.5,color:"var(--muted)",marginTop:2}},sf.avanceUtilisee>0?this.fmt(sf.avanceUtilisee)+" déduite de ce lavage":"Non utilisée")),
+            h("button",{className:"press",onClick:()=>this.setSF({avanceOverride:true,avanceUtilisee:sf.avanceUtilisee>0?0:Math.min(soldeA,rec-sf.detteContractee)}),style:{fontSize:13,fontWeight:700,color:"var(--green)",border:"1.5px solid var(--green)",borderRadius:8,padding:"8px 12px"}},sf.avanceUtilisee>0?"Ne pas utiliser":"Utiliser")):null,
+          !sf.open?h("button",{className:"press",onClick:()=>this.setSF({open:true}),style:{fontSize:14,fontWeight:700,color:"var(--bluet)"}},"+ Ajouter une dette ou une avance"):
+          h("div",null,
+            h("div",{style:{fontSize:12.5,fontWeight:800,color:"var(--muted)",margin:"0 2px 8px"}},"4 — DETTE & AVANCE"),
+            this.montantRow("Dette contractée (crédit)",sf.detteContractee,v=>this.setSF({detteContractee:v}),rec-sf.avanceUtilisee,"var(--amber)"),
+            soldeD>0?this.montantRow("Rembourser une dette",sf.dettePayee,v=>this.setSF({dettePayee:v}),soldeD,"var(--green)"):null,
+            this.montantRow("Verser une avance",sf.avanceVersee,v=>this.setSF({avanceVersee:v}),9999999,"var(--green)"),
+            this.montantRow("Avance utilisée",sf.avanceUtilisee,v=>this.setSF({avanceUtilisee:v,avanceOverride:true}),Math.min(soldeA,rec-sf.detteContractee),"var(--bluet)"),
+            comptant>0?h("div",{style:{fontSize:13,color:"var(--muted)",padding:"4px 2px"}},"Réglé comptant : ",h("b",{style:{color:"var(--text)"}},this.fmt(comptant))):null,
+            sf.dettePayee>0&&sf.detteContractee>0?h("div",{style:{fontSize:12.5,color:"var(--amber)",padding:"4px 2px"}},"⚠ Remboursement et nouvelle dette sur la même saisie — vérifiez la cohérence."):null)):null,
+        doubleAlert?h("div",{style:{fontSize:12.5,color:"var(--amber)",background:"#FFF4E0",borderRadius:10,padding:10,marginBottom:10}},"⚠ Une saisie identique existe depuis moins de 2 minutes."):null,
+        errors.map((e,i)=>h("div",{key:i,style:{fontSize:13,color:"var(--red)",padding:"3px 2px",fontWeight:600}},"• "+e))),
+      h("div",{style:{flex:"none",padding:"8px 12px",paddingBottom:"max(8px,env(safe-area-inset-bottom))",borderTop:"1px solid var(--line)",background:"var(--surface)",display:"flex",justifyContent:"flex-end"}},this.btn(can?"Valider — "+this.fmt(nette):"Complétez la saisie",()=>this.saveSaisie(),{big:true,disabled:!can})));
+  }
+  dateSection(sf){
+    const today=this.journeeToday();
+    const hd=new Date(today+"T00:00:00Z"); hd.setUTCDate(hd.getUTCDate()-1); const hier=this.isoDate(hd);
+    const isToday=sf.dateOp===today, isHier=sf.dateOp===hier;
+    const retro=sf.dateOp<today;
+    const chip=(lbl,onClick,on)=>h("button",{key:lbl,className:"press",onClick,style:{padding:"9px 14px",borderRadius:20,fontWeight:700,fontSize:13.5,background:on?"var(--navy)":"var(--surface)",color:on?"#fff":"var(--navy)",border:"1.5px solid "+(on?"var(--navy)":"var(--line)")}},lbl);
+    return h("div",{style:{marginBottom:14}},
+      h("div",{style:{fontSize:12.5,fontWeight:800,color:"var(--muted)",margin:"0 2px 8px",letterSpacing:.3}},"DATE DE L'OPÉRATION"),
+      h("div",{style:{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}},
+        chip("Aujourd'hui",()=>this.setSF({dateOp:today}),isToday),
+        chip("Hier",()=>this.setSF({dateOp:hier}),isHier),
+        h("button",{className:"press",onClick:()=>this.setState({datePick:{value:sf.dateOp,ym:sf.dateOp.slice(0,7)}}),style:{display:"flex",alignItems:"center",gap:7,padding:"9px 14px",borderRadius:20,fontWeight:700,fontSize:13.5,background:(!isToday&&!isHier)?"var(--navy)":"var(--surface)",color:(!isToday&&!isHier)?"#fff":"var(--navy)",border:"1.5px solid "+((!isToday&&!isHier)?"var(--navy)":"var(--line)")}},
+          this.icon("clock",16,(!isToday&&!isHier)?"#fff":"var(--blue)"),
+          (!isToday&&!isHier)?this.frDate(sf.dateOp):"Autre date")),
+      retro?h("div",{style:{marginTop:8,fontSize:12.5,color:"var(--amber)",background:"#FFF4E0",borderRadius:8,padding:"8px 12px",fontWeight:600}},"Écriture rétro-datée au "+this.frDateLong(sf.dateOp)+" — elle sera comptée dans cette journée-là, pas aujourd'hui."):null);
+  }
+  montantRow(label,val,onCommit,max,color){ return h("button",{className:"press",onClick:()=>this.openKeypad({title:label,value:val,max,onCommit}),style:{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 14px",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:10,marginBottom:8}},h("span",{style:{fontSize:14,color:"var(--muted)"}},label),h("span",{className:"mono",style:{fontWeight:800,fontSize:16,color:val>0?color:"var(--muted)"}},this.fmt(val))); }
+  vSaisieSaved(){ const s=this.state.saved;
+    return h("div",{style:{position:"absolute",inset:0,background:"var(--surface)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:28,animation:"gfmFade .2s"}},
+      h("div",{style:{width:88,height:88,borderRadius:"50%",background:"#E6F4EC",display:"grid",placeItems:"center",marginBottom:18}},this.icon("check",48,"var(--green)")),
+      h("div",{style:{fontSize:22,fontWeight:800,color:"var(--navy)"}},s.edit?"Saisie modifiée":"Saisie enregistrée"),
+      h("div",{className:"mono",style:{fontSize:16,marginTop:8,color:s.nette<0?"var(--red)":"var(--text)"}},this.fmt(s.nette)+(s.immat?" · "+s.immat:"")),
+      h("div",{style:{width:"100%",marginTop:30,display:"flex",flexDirection:"column",gap:12}},
+        this.btn("Saisie suivante",()=>{ this.setState({sf:this.newSF(),saved:null}); },{big:true,full:true,icon:"plusc"}),
+        this.btn("Terminé",()=>{ this.setState({saved:null}); this.tab("accueil"); },{variant:"outline",full:true})));
+  }
+
+  /* ---------- RAPPORTS ---------- */
+  vRapports(){
+    const items=[["journalier","Synthèse journalière","Détail de la recette nette du jour, poste par poste.","doc"],["mensuel","Synthèse mensuelle","Recette, part laveurs et dettes par mois.","rapports"],["dettes-clients","Dettes clients","Solde dû par véhicule, trié par montant.","car"],["dettes-perso","Dettes du personnel","Cumul par agent, à retenir sur salaire.","user"]];
+    return h(F,null,this.hdr("Rapports",{back:false}),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16,paddingBottom:90}},
+        items.map(([k,t,d,ic])=>h("button",{key:k,className:"press",onClick:()=>this.setState({rapportKind:k},()=>this.nav("rapport")),style:{width:"100%",textAlign:"left",display:"flex",gap:14,alignItems:"center",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:"var(--r)",padding:16,marginBottom:12}},
+          h("div",{style:{width:46,height:46,borderRadius:12,background:"#EEF2FA",display:"grid",placeItems:"center",flex:"none"}},this.icon(ic,24,"var(--blue)")),
+          h("div",{style:{flex:1}},h("div",{style:{fontWeight:700,fontSize:15.5,color:"var(--navy)"}},t),h("div",{style:{fontSize:13,color:"var(--muted)",marginTop:2}},d)),
+          this.icon("back",22,"var(--muted)")))));
+  }
+  vRapport(){
+    const k=this.state.rapportKind; const db=this.state.db;
+    if(k==="journalier"){ const today=this.journeeToday(); const list=this.encActifs().filter(e=>e.date_operation===today); const t=this.totaux(list);
+      const lignes=[["Recette brute (lavages)",t.rec,"+"],["Part laveurs",t.part,"−"],["Dettes contractées",t.dc,"−"],["Dettes payées",t.dp,"+"],["Avances utilisées",t.au,"−"],["Avances versées",t.av,"+"]];
+      return h(F,null,this.hdr("Synthèse journalière"),
+        h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+          h("div",{style:{color:"var(--muted)",fontSize:13,marginBottom:10}},this.frDateLong(today)+" · "+t.n+" voiture"+(t.n>1?"s":"")),
+          this.card(lignes.map(([l,v,sg],i)=>h("div",{key:i,style:{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:"1px solid var(--line)"}},h("span",{style:{fontSize:14.5}},sg+" "+l),h("span",{className:"mono",style:{fontWeight:700}},this.fmtN(v))))
+            .concat(h("div",{key:"n",style:{display:"flex",justifyContent:"space-between",padding:"14px 0 2px"}},h("span",{style:{fontWeight:800,fontSize:16}},"Recette nette"),h("span",{className:"mono",style:{fontWeight:800,fontSize:20,color:t.nette<0?"var(--red)":"var(--navy)"}},this.fmt(t.nette))))),
+          h("div",{style:{marginTop:16}},this.btn("Exporter et partager",()=>{ this.setState({periode:"jour"}); this.exportJournalier(); },{big:true,full:true,icon:"save"}))));
+    }
+    if(k==="mensuel"){ const map={}; this.encActifs().forEach(e=>{ const m=e.date_operation.slice(0,7); (map[m]=map[m]||[]).push(e); });
+      const keys=Object.keys(map).sort().reverse();
+      return h(F,null,this.hdr("Synthèse mensuelle"),
+        h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+          keys.map(m=>{ const t=this.totaux(map[m]); return this.card([
+            h("div",{key:"h",style:{display:"flex",justifyContent:"space-between",marginBottom:8}},h("b",{style:{color:"var(--navy)",fontSize:15}},MOISL[parseInt(m.slice(5),10)-1]+" "+m.slice(0,4)),h("span",{className:"mono",style:{fontWeight:800,color:t.nette<0?"var(--red)":"var(--navy)"}},this.fmt(t.nette))),
+            h("div",{key:"d",style:{fontSize:12.5,color:"var(--muted)"}},t.n+" voitures · brute "+this.fmtN(t.rec)+" · part "+this.fmtN(t.part)+" · dettes "+this.fmtN(t.dc))],{marginBottom:10}); }),
+          h("div",{style:{marginTop:6}},this.btn("Exporter et partager",()=>this.exportMensuel(),{big:true,full:true,icon:"save"}))));
+    }
+    if(k==="dettes-clients"){ const rows=db.vehicule.filter(v=>v.actif===1).map(v=>({v,solde:this.soldeDette(v.id)})).filter(r=>r.solde>0).sort((a,b)=>b.solde-a.solde); const tot=rows.reduce((a,r)=>a+r.solde,0);
+      return h(F,null,this.hdr("Dettes clients"),
+        h("div",{style:{flex:"none",background:"var(--navy)",color:"#fff",padding:"14px 18px"}},h("div",{style:{fontSize:12,opacity:.8}},"Total dû par les clients"),h("div",{className:"mono",style:{fontSize:26,fontWeight:800}},this.fmt(tot))),
+        h("div",{className:"scr",style:{flex:1,overflowY:"auto"}},
+          rows.length===0?h("div",{style:{padding:30,textAlign:"center",color:"var(--muted)"}},"Aucune dette client."):rows.map(r=>h("div",{key:r.v.id,style:{display:"flex",justifyContent:"space-between",padding:"13px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)"}},h("div",null,h("div",{style:{fontWeight:700,color:"var(--navy)"}},r.v.immatriculation),h("div",{style:{fontSize:12.5,color:"var(--muted)"}},r.v.chauffeur+(r.v.telephone?" · "+r.v.telephone:""))),h("div",{className:"mono",style:{fontWeight:800,color:"var(--red)"}},this.fmt(r.solde))))),
+        h("div",{style:{flex:"none",padding:12,borderTop:"1px solid var(--line)"}},this.btn("Exporter et partager",()=>this.exportDettesClients(),{big:true,full:true,icon:"save"})));
+    }
+    // dettes-perso
+    const rows=db.agent.filter(a=>a.actif===1).map(a=>({a,solde:this.detteAgent(a.id)})).filter(r=>r.solde>0).sort((x,y)=>y.solde-x.solde); const tot=rows.reduce((a,r)=>a+r.solde,0);
+    return h(F,null,this.hdr("Dettes du personnel"),
+      h("div",{style:{flex:"none",background:"var(--navy)",color:"#fff",padding:"14px 18px"}},h("div",{style:{fontSize:12,opacity:.8}},"Total à retenir sur salaire"),h("div",{className:"mono",style:{fontSize:26,fontWeight:800}},this.fmt(tot))),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto"}},
+        rows.length===0?h("div",{style:{padding:30,textAlign:"center",color:"var(--muted)"}},"Aucune dette de personnel."):rows.map(r=>h("div",{key:r.a.id,style:{display:"flex",justifyContent:"space-between",padding:"13px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)"}},h("div",null,h("div",{style:{fontWeight:700,color:"var(--navy)"}},(r.a.nom+" "+(r.a.prenom||"")).trim()),h("div",{style:{fontSize:12.5,color:"var(--muted)"}},r.a.fonction||"")),h("div",{className:"mono",style:{fontWeight:800,color:"var(--amber)"}},this.fmt(r.solde))))),
+      h("div",{style:{flex:"none",padding:12,borderTop:"1px solid var(--line)"}},this.btn("Exporter et partager",()=>this.exportDettesPerso(),{big:true,full:true,icon:"save"})));
+  }
+
+  /* ---------- PLUS ---------- */
+  vPlus(){
+    const item=(ic,l,sub,onClick)=>h("button",{className:"press",onClick,style:{width:"100%",textAlign:"left",display:"flex",gap:14,alignItems:"center",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:"var(--r)",padding:15,marginBottom:10}},h("div",{style:{width:42,height:42,borderRadius:11,background:"#EEF2FA",display:"grid",placeItems:"center",flex:"none"}},this.icon(ic,22,"var(--blue)")),h("div",{style:{flex:1}},h("div",{style:{fontWeight:700,color:"var(--navy)"}},l),sub?h("div",{style:{fontSize:12.5,color:"var(--muted)"}},sub):null),this.icon("back",20,"var(--muted)"));
+    return h(F,null,this.hdr("Plus",{back:false}),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16,paddingBottom:90}},
+        item("car","Véhicules","Fiches, soldes d'ouverture",()=>this.nav("vehicules")),
+        item("list","Prestations et tarifs","Montants et part laveur",()=>this.nav("prestations")),
+        item("user","Personnel et agents","Laveurs, salaires, statut",()=>this.nav("agents")),
+        item("wallet","Dettes du personnel","Dettes et remboursements",()=>this.nav("dettes-perso")),
+        item("rapports","Paie du personnel","Salaire net et masse salariale",()=>this.nav("paie")),
+        item("save","Sauvegarde et restauration","Protéger et transférer les données",()=>this.nav("sauvegarde")),
+        item("gear","Réglages","Heure de clôture, code, données",()=>this.nav("reglages")),
+        item("clock","Journal d'audit","Historique des modifications",()=>this.nav("audit")),
+        item("shield","À propos","Version et mentions",()=>this.nav("apropos"))));
+  }
+
+  /* ---------- VEHICULES ---------- */
+  vVehicules(){ const db=this.state.db; const list=db.vehicule.filter(v=>v.actif===1).sort((a,b)=>a.immatriculation.localeCompare(b.immatriculation));
+    return h(F,null,this.hdr("Véhicules",{right:h("button",{className:"press",onClick:()=>this.nav("vehicule-form",{}),style:{color:"#fff"}},this.icon("plusc",26))}),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",paddingBottom:20}},
+        list.map(v=>{ const sd=this.soldeDette(v.id),sa=this.soldeAvance(v.id);
+          return h("button",{key:v.id,className:"press",onClick:()=>this.nav("vehicule-form",{id:v.id}),style:{width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)"}},
+            h("div",{style:{flex:1}},h("div",{style:{fontWeight:700,color:"var(--navy)"}},v.immatriculation),h("div",{style:{fontSize:12.5,color:"var(--muted)"}},v.chauffeur+(v.telephone?" · "+v.telephone:""))),
+            sd>0?h("span",{className:"mono",style:{fontSize:12.5,fontWeight:700,color:"var(--red)"}},"−"+this.fmtN(sd)):null,
+            sa>0?h("span",{className:"mono",style:{fontSize:12.5,fontWeight:700,color:"var(--green)"}},"+"+this.fmtN(sa)):null); })));
+  }
+  vVehForm(){ const p=this.state.params; const ex=p.id?this.state.db.vehicule.find(x=>x.id===p.id):null;
+    const f=this._vf||(this._vf={id:p.id||null,immatriculation:ex?ex.immatriculation:(p.prefill||""),chauffeur:ex?ex.chauffeur:"",telephone:ex?ex.telephone:"",dette_ouverture:ex?ex.dette_ouverture:0,avance_ouverture:ex?ex.avance_ouverture:0});
+    const set=k=>e=>{ f[k]=e.target.value; this.forceUpdate(); };
+    const hasEnc=ex&&this.state.db.encaissement.some(e=>e.supprime===0&&e.vehicule_id===ex.id);
+    const dup=this.state.db.vehicule.some(v=>v.actif===1&&v.id!==f.id&&this.norm(v.immatriculation)===this.norm(f.immatriculation));
+    const valid=f.immatriculation.trim()&&f.chauffeur.trim()&&!dup;
+    return h(F,null,this.hdr(f.id?"Modifier le véhicule":"Nouveau véhicule"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+        ex?h("div",{style:{marginBottom:16}},this.btn("Situation : recettes & dettes",()=>this.nav("vehicule-histo",{id:ex.id}),{variant:"outline",full:true,icon:"clock"})):null,
+        this.field("Immatriculation",h("input",{value:f.immatriculation,onChange:set("immatriculation"),placeholder:"AB-123-CG",style:this.inpS()})),
+        dup?h("div",{style:{color:"var(--red)",fontSize:13,margin:"-6px 0 10px"}},"Une fiche active existe déjà pour cette immatriculation."):null,
+        this.field("Chauffeur",h("input",{value:f.chauffeur,onChange:set("chauffeur"),style:this.inpS()})),
+        this.field("Téléphone",h("input",{value:f.telephone,onChange:set("telephone"),inputMode:"tel",style:this.inpS()})),
+        this.field("Dette d'ouverture (reprise papier)",this.numBtn(f.dette_ouverture,v=>{f.dette_ouverture=v;this.forceUpdate();},"Dette d'ouverture")),
+        this.field("Avance d'ouverture (reprise papier)",this.numBtn(f.avance_ouverture,v=>{f.avance_ouverture=v;this.forceUpdate();},"Avance d'ouverture")),
+        ex?h("div",{style:{marginTop:10}},this.btn(hasEnc?"Archiver ce véhicule":"Supprimer ce véhicule",()=>{ this.openConfirm({title:hasEnc?"Archiver ?":"Supprimer ?",message:hasEnc?"Ce véhicule a un historique : il sera archivé (retiré des listes de saisie) et conservé dans les rapports.":"Supprimer définitivement ce véhicule ?",okLabel:hasEnc?"Archiver":"Supprimer",danger:true,onOk:()=>{ this.archive("vehicule",ex.id); this._vf=null; this.setState({confirm:null}); this.back(); }}); },{variant:"outline",full:true,icon:"trash"})):null),
+      h("div",{style:{flex:"none",padding:"8px 12px",paddingBottom:"max(8px,env(safe-area-inset-bottom))",borderTop:"1px solid var(--line)",background:"var(--surface)",display:"flex",justifyContent:"flex-end"}},this.btn("Enregistrer",()=>{ f.dette_ouverture=+f.dette_ouverture||0; f.avance_ouverture=+f.avance_ouverture||0; const goSaisie=p.fromSaisie; this.saveVeh({...f}); if(goSaisie){ const nv=this.state.db.vehicule[this.state.db.vehicule.length-1]; this.setSF({vehicule_id:nv.id,vehSearch:nv.immatriculation}); } this._vf=null; },{big:true,disabled:!valid})));
+  }
+
+  /* ---------- VEHICULE : SITUATION / HISTORIQUE ---------- */
+  histoRange(){
+    const today=this.journeeToday();
+    if(this.state.histoPeriode==="30j"){ const d=new Date(today+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()-29); return [this.isoDate(d),today]; }
+    if(this.state.histoPeriode==="perso"){ return [this.state.histoFrom||"0000-01-01",this.state.histoTo||"9999-12-31"]; }
+    return ["0000-01-01","9999-12-31"];
+  }
+  vVehHisto(){
+    const db=this.state.db; const v=db.vehicule.find(x=>x.id===this.state.params.id); if(!v) return this.hdr("Véhicule");
+    const [a,b]=this.histoRange();
+    const list=this.encActifs().filter(e=>e.vehicule_id===v.id&&e.date_operation>=a&&e.date_operation<=b).sort((x,y)=>y.date_operation.localeCompare(x.date_operation)||y.horodatage_saisie.localeCompare(x.horodatage_saisie));
+    const t=this.totaux(list);
+    const soldeD=this.soldeDette(v.id), soldeA=this.soldeAvance(v.id);
+    const dettes=list.filter(e=>e.dette_contractee>0);
+    const pill=(k,l)=>h("button",{key:k,className:"press",onClick:()=>this.setState({histoPeriode:k}),style:{padding:"8px 14px",borderRadius:20,fontWeight:700,fontSize:13,background:this.state.histoPeriode===k?"var(--navy)":"var(--surface)",color:this.state.histoPeriode===k?"#fff":"var(--navy)",border:"1px solid var(--line)"}},l);
+    const sole=(label,val,color)=>h("div",{style:{flex:1,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:"var(--r)",padding:"12px"}},h("div",{style:{fontSize:12,color:"var(--muted)",fontWeight:600}},label),h("div",{className:"mono",style:{fontSize:17,fontWeight:800,color,marginTop:4}},this.fmt(val)));
+    return h(F,null,
+      this.hdr(v.immatriculation),
+      h("div",{style:{flex:"none",background:"var(--navy)",color:"#fff",padding:"12px 18px 14px"}},
+        h("div",{style:{fontSize:14,opacity:.85}},v.chauffeur+(v.telephone?" · "+v.telephone:"")),
+        h("div",{style:{display:"flex",gap:20,marginTop:8}},
+          h("div",null,h("div",{style:{fontSize:11,opacity:.7}},"Dette actuelle"),h("div",{className:"mono",style:{fontSize:20,fontWeight:800,color:soldeD>0?"#ff8f88":"#fff"}},this.fmt(soldeD))),
+          h("div",null,h("div",{style:{fontSize:11,opacity:.7}},"Avance actuelle"),h("div",{className:"mono",style:{fontSize:20,fontWeight:800,color:soldeA>0?"#8fe3ac":"#fff"}},this.fmt(soldeA))))),
+      h("div",{style:{flex:"none",padding:"10px 14px",display:"flex",gap:8,background:"var(--surface)",borderBottom:"1px solid var(--line)"}},pill("tout","Tout l'historique"),pill("30j","30 jours"),pill("perso","Période")),
+      this.state.histoPeriode==="perso"?h("div",{style:{flex:"none",display:"flex",gap:8,padding:"10px 14px",background:"var(--surface)",borderBottom:"1px solid var(--line)"}},
+        h("input",{type:"date",value:this.state.histoFrom,onChange:e=>this.setState({histoFrom:e.target.value}),style:{flex:1,padding:10,border:"1px solid var(--line)",borderRadius:8}}),
+        h("input",{type:"date",value:this.state.histoTo,onChange:e=>this.setState({histoTo:e.target.value}),style:{flex:1,padding:10,border:"1px solid var(--line)",borderRadius:8}})):null,
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:14,paddingBottom:40}},
+        h("div",{style:{display:"flex",gap:10,marginBottom:12}},sole("Recette nette (période)",t.nette,t.nette<0?"var(--red)":"var(--navy)"),sole("Recette brute",t.rec,"var(--text)")),
+        h("div",{style:{display:"flex",gap:10,marginBottom:16}},sole("Dettes contractées",t.dc,"var(--red)"),sole("Dettes remboursées",t.dp,"var(--green)")),
+        dettes.length?h("div",{style:{marginBottom:16}},
+          h("div",{style:{fontSize:12.5,fontWeight:800,color:"var(--muted)",margin:"0 2px 8px"}},"DATES DE CONTRACTION DES DETTES"),
+          dettes.map(e=>{ const p=db.prestation.find(x=>x.id===e.prestation_id)||{}; return h("div",{key:e.id,style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 14px",background:"#FFF4E0",borderRadius:10,marginBottom:6,borderLeft:"4px solid var(--amber)"}},h("div",null,h("div",{style:{fontWeight:700,color:"var(--navy)",fontSize:14}},this.frDateLong(e.date_operation)),h("div",{style:{fontSize:12.5,color:"var(--muted)"}},p.libelle||"")),h("div",{className:"mono",style:{fontWeight:800,color:"var(--amber)"}},"+"+this.fmtN(e.dette_contractee))); })):null,
+        h("div",{style:{fontSize:12.5,fontWeight:800,color:"var(--muted)",margin:"0 2px 8px"}},"TOUTES LES RECETTES ("+list.length+")"),
+        list.length===0?h("div",{style:{textAlign:"center",color:"var(--muted)",padding:24,fontSize:14}},"Aucune écriture sur cette période."):
+        list.map(e=>{ const p=db.prestation.find(x=>x.id===e.prestation_id)||{}; const tags=[]; if(e.dette_contractee)tags.push("dette "+this.fmtN(e.dette_contractee)); if(e.dette_payee)tags.push("remb. "+this.fmtN(e.dette_payee)); if(e.avance_versee)tags.push("avance "+this.fmtN(e.avance_versee)); if(e.avance_utilisee)tags.push("av. utilisée "+this.fmtN(e.avance_utilisee));
+          const bord=e.avance_versee||e.avance_utilisee?"var(--green)":(e.dette_contractee||e.dette_payee?"var(--amber)":"var(--blue)");
+          return h("button",{key:e.id,className:"press",onClick:()=>this.openSaisie(e.id),style:{width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:12,padding:"11px 12px",background:"var(--surface)",border:"1px solid var(--line)",borderLeft:"4px solid "+bord,borderRadius:10,marginBottom:6}},
+            h("div",{style:{flex:1,minWidth:0}},h("div",{style:{fontWeight:700,fontSize:14,color:"var(--navy)"}},this.frDate(e.date_operation)+" · "+(p.libelle||"")),tags.length?h("div",{style:{fontSize:12,color:"var(--muted)",marginTop:2}},tags.join(" · ")):null),
+            h("div",{className:"mono",style:{fontWeight:800,fontSize:14,color:e.recette_nette<0?"var(--red)":"var(--text)"}},this.fmtN(e.recette_nette))); })));
+  }
+
+  /* ---------- PRESTATIONS ---------- */
+  vPrestations(){ const list=this.state.db.prestation.filter(p=>p.actif===1).sort((a,b)=>a.ordre-b.ordre);
+    return h(F,null,this.hdr("Prestations et tarifs",{right:h("button",{className:"press",onClick:()=>this.nav("prestation-form",{}),style:{color:"#fff"}},this.icon("plusc",26))}),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",paddingBottom:20}},
+        list.map(p=>h("button",{key:p.id,className:"press",onClick:()=>this.nav("prestation-form",{id:p.id}),style:{width:"100%",textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)"}},h("div",null,h("div",{style:{fontWeight:700,color:"var(--navy)"}},p.libelle),h("div",{style:{fontSize:12.5,color:"var(--muted)"}},"Part laveur "+this.fmt(p.part_laveur_defaut))),h("div",{className:"mono",style:{fontWeight:800,color:"var(--navy)"}},this.fmt(p.montant))))));
+  }
+  vPrestForm(){ const p=this.state.params; const ex=p.id?this.state.db.prestation.find(x=>x.id===p.id):null;
+    const f=this._pf||(this._pf={id:p.id||null,libelle:ex?ex.libelle:"",montant:ex?ex.montant:0,part_laveur_defaut:ex?ex.part_laveur_defaut:0,ordre:ex?ex.ordre:(this.state.db.prestation.length+1)});
+    const valid=f.libelle.trim()&&f.montant>0&&f.part_laveur_defaut<=f.montant;
+    return h(F,null,this.hdr(f.id?"Modifier la prestation":"Nouvelle prestation"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+        this.field("Libellé",h("input",{value:f.libelle,onChange:e=>{f.libelle=e.target.value;this.forceUpdate();},style:this.inpS()})),
+        this.field("Montant (FCFA)",this.numBtn(f.montant,v=>{f.montant=v;if(f.part_laveur_defaut>v)f.part_laveur_defaut=v;this.forceUpdate();},"Montant")),
+        this.field("Part laveur par défaut",this.numBtn(f.part_laveur_defaut,v=>{f.part_laveur_defaut=v;this.forceUpdate();},"Part laveur",f.montant)),
+        f.part_laveur_defaut>f.montant?h("div",{style:{color:"var(--red)",fontSize:13,marginTop:-6}},"La part laveur ne peut pas dépasser le montant."):null),
+      h("div",{style:{flex:"none",padding:"8px 12px",paddingBottom:"max(8px,env(safe-area-inset-bottom))",borderTop:"1px solid var(--line)",background:"var(--surface)",display:"flex",justifyContent:"flex-end"}},this.btn("Enregistrer",()=>{ this.savePrest({...f}); this._pf=null; },{big:true,disabled:!valid})));
+  }
+
+  /* ---------- AGENTS ---------- */
+  vAgents(){ const showInact=this.state.agentsInactifs; const all=this.state.db.agent; const list=all.filter(a=>showInact?true:a.actif===1); const nInact=all.filter(a=>a.actif!==1).length;
+    return h(F,null,this.hdr("Personnel et agents",{right:h("button",{className:"press",onClick:()=>this.nav("agent-form",{}),style:{color:"#fff"}},this.icon("plusc",26))}),
+      nInact>0?h("div",{style:{flex:"none",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",background:"var(--surface)",borderBottom:"1px solid var(--line)"}},
+        h("span",{style:{fontSize:13,color:"var(--muted)",fontWeight:600}},list.filter(a=>a.actif===1).length+" actif(s) · "+nInact+" inactif(s)"),
+        h("button",{className:"press",onClick:()=>this.setState({agentsInactifs:!showInact}),style:{fontSize:13,fontWeight:700,color:"var(--bluet)"}},showInact?"Masquer les inactifs":"Voir les inactifs")):null,
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",paddingBottom:20}},
+        list.map(a=>{ const ini=((a.prenom||a.nom)[0]||"?").toUpperCase()+(a.nom[0]||"").toUpperCase(); const d=this.detteAgent(a.id); const off=a.actif!==1;
+          return h("button",{key:a.id,className:"press",onClick:()=>this.nav("agent-form",{id:a.id}),style:{width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:12,padding:"12px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)",opacity:off?.6:1}},h("div",{style:{width:40,height:40,borderRadius:"50%",background:off?"var(--muted)":"var(--navy)",color:"#fff",display:"grid",placeItems:"center",fontWeight:800,fontSize:14,flex:"none"}},ini),h("div",{style:{flex:1,minWidth:0}},h("div",{style:{fontWeight:700,color:"var(--navy)",display:"flex",alignItems:"center",gap:8}},(a.nom+" "+(a.prenom||"")).trim(),off?h("span",{style:{fontSize:10,fontWeight:800,color:"#fff",background:"var(--muted)",borderRadius:4,padding:"2px 6px"}},"INACTIF"):null),h("div",{style:{fontSize:12.5,color:"var(--muted)"}},(a.fonction||"—")+(a.salaire_brut?" · "+this.fmtN(a.salaire_brut)+" FCFA":""))),d>0?h("span",{className:"mono",style:{fontSize:12.5,fontWeight:700,color:"var(--amber)"}},"−"+this.fmtN(d)):null); })));
+  }
+  vAgentForm(){ const p=this.state.params; const ex=p.id?this.state.db.agent.find(x=>x.id===p.id):null;
+    const f=this._af||(this._af={id:p.id||null,nom:ex?ex.nom:"",prenom:ex?ex.prenom:"",telephone:ex?ex.telephone:"",fonction:ex?ex.fonction:"Laveur",dette_ouverture:ex?ex.dette_ouverture:0,salaire_brut:ex?(ex.salaire_brut||0):0,actif:ex?(ex.actif!==0?1:0):1,motif_inactif:ex?(ex.motif_inactif||""):"",date_inactif:ex?(ex.date_inactif||""):""});
+    const valid=f.nom.trim()&&(f.actif||f.motif_inactif.trim());
+    const stBtn=(on,lbl,col)=>h("button",{key:lbl,className:"press",onClick:()=>{f.actif=on?1:0;if(on){f.motif_inactif="";}this.forceUpdate();},style:{flex:1,minHeight:48,borderRadius:10,fontWeight:700,fontSize:14.5,background:(f.actif===1)===on?col:"var(--surface)",color:(f.actif===1)===on?"#fff":"var(--navy)",border:"1.5px solid var(--line)"}},lbl);
+    return h(F,null,this.hdr(f.id?"Modifier l'agent":"Nouvel agent"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+        this.field("Nom",h("input",{value:f.nom,onChange:e=>{f.nom=e.target.value;this.forceUpdate();},style:this.inpS()})),
+        this.field("Prénom",h("input",{value:f.prenom,onChange:e=>{f.prenom=e.target.value;this.forceUpdate();},style:this.inpS()})),
+        this.field("Téléphone",h("input",{value:f.telephone,onChange:e=>{f.telephone=e.target.value;this.forceUpdate();},inputMode:"tel",style:this.inpS()})),
+        this.field("Fonction",h("select",{value:f.fonction,onChange:e=>{f.fonction=e.target.value;this.forceUpdate();},style:this.inpS()},["Laveur","Gardien","Chef de site","Autre"].map(o=>h("option",{key:o,value:o},o)))),
+        this.field("Salaire brut mensuel (FCFA)",this.numBtn(f.salaire_brut,v=>{f.salaire_brut=v;this.forceUpdate();},"Salaire brut mensuel")),
+        this.field("Dette d'ouverture",this.numBtn(f.dette_ouverture,v=>{f.dette_ouverture=v;this.forceUpdate();},"Dette d'ouverture")),
+        ex?this.field("Statut de l'agent",h("div",{style:{display:"flex",gap:10}},stBtn(true,"Actif","var(--green)"),stBtn(false,"Inactif / licencié","var(--red)"))):null,
+        ex&&f.actif===0?h("div",{style:{marginBottom:16}},
+          h("div",{style:{fontSize:13,fontWeight:700,color:"var(--muted)",marginBottom:7}},"Motif de fin de contrat"),
+          h("textarea",{value:f.motif_inactif,onChange:e=>{f.motif_inactif=e.target.value;this.forceUpdate();},placeholder:"Licenciement, démission, fin de contrat…",rows:3,style:{...this.inpS(),resize:"vertical",fontFamily:"inherit"}}),
+          h("div",{style:{fontSize:12.5,color:"var(--muted)",marginTop:6}},"L'agent est conservé dans l'historique et sort de la paie. Une dette éventuelle reste due.")):null),
+      h("div",{style:{flex:"none",padding:"8px 12px",paddingBottom:"max(8px,env(safe-area-inset-bottom))",borderTop:"1px solid var(--line)",background:"var(--surface)",display:"flex",justifyContent:"flex-end"}},this.btn("Enregistrer",()=>{this.saveAgent({...f});this._af=null;},{big:true,disabled:!valid})));
+  }
+
+  /* ---------- DETTES PERSONNEL ---------- */
+  vDettesPerso(){ const db=this.state.db; const agents=db.agent.filter(a=>a.actif===1);
+    return h(F,null,this.hdr("Dettes du personnel",{right:h("button",{className:"press",onClick:()=>this.nav("mdp-form",{}),style:{color:"#fff"}},this.icon("plusc",26))}),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16,paddingBottom:20}},
+        h("div",{style:{fontSize:12.5,color:"var(--muted)",marginBottom:12}},"Ces mouvements n'entrent jamais dans la recette de caisse."),
+        agents.map(a=>{ const d=this.detteAgent(a.id); const mvts=db.mouvement_dette_personnel.filter(m=>m.supprime===0&&m.agent_id===a.id).sort((x,y)=>y.date_operation.localeCompare(x.date_operation));
+          return this.card([h("div",{key:"h",style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:mvts.length?8:0}},h("b",{style:{color:"var(--navy)"}},(a.nom+" "+(a.prenom||"")).trim()),h("span",{className:"mono",style:{fontWeight:800,color:d>0?"var(--amber)":"var(--green)"}},this.fmt(d)))].concat(mvts.slice(0,4).map(m=>h("div",{key:m.id,style:{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0",color:"var(--muted)"}},h("span",null,this.frDate(m.date_operation)+" · "+(m.type==="DETTE"?"Dette":"Remb.")+(m.motif?" — "+m.motif:"")),h("span",{className:"mono",style:{color:m.type==="DETTE"?"var(--amber)":"var(--green)"}},(m.type==="DETTE"?"+":"−")+this.fmtN(m.montant))))),{marginBottom:10}); })));
+  }
+  vMdpForm(){ const db=this.state.db; const agents=db.agent.filter(a=>a.actif===1);
+    const f=this._mf||(this._mf={agent_id:agents[0]?agents[0].id:null,type:"DETTE",montant:0,motif:"",date_operation:this.journeeToday()});
+    const valid=f.agent_id&&f.montant>0;
+    return h(F,null,this.hdr("Mouvement de dette"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+        this.field("Agent",h("select",{value:f.agent_id||"",onChange:e=>{f.agent_id=+e.target.value;this.forceUpdate();},style:this.inpS()},agents.map(a=>h("option",{key:a.id,value:a.id},(a.nom+" "+(a.prenom||"")).trim())))),
+        this.field("Type",h("div",{style:{display:"flex",gap:10}},["DETTE","REMBOURSEMENT"].map(tp=>{ const on=f.type===tp; return h("button",{key:tp,className:"press",onClick:()=>{f.type=tp;this.forceUpdate();},style:{flex:1,minHeight:48,borderRadius:10,fontWeight:700,background:on?"var(--navy)":"var(--surface)",color:on?"#fff":"var(--navy)",border:"1.5px solid var(--line)"}},tp==="DETTE"?"Dette":"Remboursement"); }))),
+        this.field("Montant",this.numBtn(f.montant,v=>{f.montant=v;this.forceUpdate();},"Montant")),
+        this.field("Motif (facultatif)",h("input",{value:f.motif,onChange:e=>{f.motif=e.target.value;this.forceUpdate();},placeholder:"Avance sur salaire…",style:this.inpS()}))),
+      h("div",{style:{flex:"none",padding:"8px 12px",paddingBottom:"max(8px,env(safe-area-inset-bottom))",borderTop:"1px solid var(--line)",background:"var(--surface)",display:"flex",justifyContent:"flex-end"}},this.btn("Enregistrer",()=>{this.saveMdp({...f});this._mf=null;},{big:true,disabled:!valid})));
+  }
+
+  /* ---------- PAIE DU PERSONNEL ---------- */
+  finMois(ym){ const [y,m]=ym.split("-").map(n=>parseInt(n,10)); return this.isoDate(new Date(Date.UTC(y,m,0))); }
+  paieState(){
+    const cur=this.journeeToday().slice(0,7);
+    if(!this._paie||this._paie.mois==null){ this._paie={mois:cur,retenues:{}}; }
+    return this._paie;
+  }
+  paieRetenue(a,ps){ const dette=Math.max(0,this.detteAgent(a.id)); const plafond=Math.min(dette,a.salaire_brut||0); const ov=ps.retenues[a.id]; return ov==null?plafond:Math.min(ov,plafond); }
+  vPaie(){
+    const db=this.state.db; const ps=this.paieState();
+    const agents=db.agent.filter(a=>a.actif===1).sort((x,y)=>(y.salaire_brut||0)-(x.salaire_brut||0));
+    let brut=0,ret=0,net=0; agents.forEach(a=>{ const b=a.salaire_brut||0; const r=this.paieRetenue(a,ps); brut+=b; ret+=r; net+=b-r; });
+    const shiftMois=n=>{ const [y,m]=ps.mois.split("-").map(v=>parseInt(v,10)); const nd=new Date(Date.UTC(y,m-1+n,1)); this._paie={mois:this.isoDate(nd).slice(0,7),retenues:{}}; this.forceUpdate(); };
+    const canNext=ps.mois<this.journeeToday().slice(0,7);
+    const enregistrer=()=>{
+      const lignes=agents.map(a=>({a,r:this.paieRetenue(a,ps)})).filter(x=>x.r>0);
+      this.openConfirm({title:"Enregistrer la paie ?",message:(lignes.length?lignes.length+" retenue(s) sur salaire seront enregistrées et viendront diminuer d'autant les dettes du personnel. ":"Aucune retenue à enregistrer. ")+"Masse salariale nette : "+this.fmt(net)+".",okLabel:"Enregistrer",onOk:()=>{
+        const dateOp=this.finMois(ps.mois);
+        lignes.forEach(({a,r})=>{ const id=this.nextId("mouvement_dette_personnel"); db.mouvement_dette_personnel.push({id,agent_id:a.id,date_operation:dateOp,type:"REMBOURSEMENT",montant:r,motif:"Retenue sur paie "+MOISL[parseInt(ps.mois.slice(5),10)-1]+" "+ps.mois.slice(0,4),supprime:0,horodatage_saisie:this.nowIso()}); this.audit("mouvement_dette_personnel",id,"CREATION",null); });
+        this._paie={mois:ps.mois,retenues:{}}; this.commit(); this.setState({confirm:null}); this.toast(lignes.length?"Paie enregistrée, "+lignes.length+" retenue(s) appliquée(s)":"Paie enregistrée");
+      }});
+    };
+    const sole=(label,val,color)=>h("div",{style:{flex:1}},h("div",{style:{fontSize:11,opacity:.75}},label),h("div",{className:"mono",style:{fontSize:17,fontWeight:800,color:color||"#fff",marginTop:2}},this.fmtN(val)));
+    return h(F,null,
+      this.hdr("Paie du personnel",{right:h("button",{className:"press",onClick:()=>this.exportPaie(),style:{color:"#fff"}},this.icon("save",24))}),
+      h("div",{style:{flex:"none",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",background:"var(--surface)",borderBottom:"1px solid var(--line)"}},
+        h("button",{className:"press",onClick:()=>shiftMois(-1),style:{width:38,height:38,borderRadius:19,background:"var(--bg)",display:"grid",placeItems:"center",color:"var(--navy)"}},this.icon("back",22)),
+        h("div",{style:{fontWeight:800,fontSize:16,color:"var(--navy)"}},MOISL[parseInt(ps.mois.slice(5),10)-1]+" "+ps.mois.slice(0,4)),
+        h("button",{className:"press",onClick:()=>canNext&&shiftMois(1),style:{width:38,height:38,borderRadius:19,background:"var(--bg)",display:"grid",placeItems:"center",color:canNext?"var(--navy)":"#C3CAD8",transform:"scaleX(-1)"}},this.icon("back",22))),
+      h("div",{style:{flex:"none",background:"var(--navy)",color:"#fff",padding:"14px 18px",display:"flex",gap:8}},sole("Masse salariale",brut),sole("Retenues dettes",ret,"#ffd28f"),sole("Net à payer",net,"#8fe3ac")),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",paddingBottom:20}},
+        agents.length===0?h("div",{style:{padding:30,textAlign:"center",color:"var(--muted)"}},"Aucun agent actif."):
+        agents.map(a=>{ const b=a.salaire_brut||0; const dette=Math.max(0,this.detteAgent(a.id)); const r=this.paieRetenue(a,ps); const plafond=Math.min(dette,b);
+          return h("div",{key:a.id,style:{padding:"12px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)"}},
+            h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline"}},h("b",{style:{color:"var(--navy)",fontSize:15}},(a.nom+" "+(a.prenom||"")).trim()),h("span",{className:"mono",style:{fontWeight:800,fontSize:16,color:"var(--navy)"}},this.fmt(b-r))),
+            h("div",{style:{fontSize:12.5,color:"var(--muted)",marginTop:2}},a.fonction||""),
+            h("div",{style:{display:"flex",gap:8,marginTop:8,fontSize:12.5}},
+              h("div",{style:{flex:1}},h("div",{style:{color:"var(--muted)"}},"Brut"),h("div",{className:"mono",style:{fontWeight:700}},this.fmtN(b))),
+              h("div",{style:{flex:1}},h("div",{style:{color:"var(--muted)"}},"Dette"),h("div",{className:"mono",style:{fontWeight:700,color:dette>0?"var(--amber)":"var(--text)"}},this.fmtN(dette))),
+              h("button",{className:"press",disabled:plafond<=0,onClick:()=>this.openKeypad({title:"Retenue sur salaire",value:r,max:plafond,onCommit:v=>{ps.retenues[a.id]=v;this.forceUpdate();}}),style:{flex:1,textAlign:"left",background:plafond>0?"#FFF4E0":"transparent",borderRadius:8,padding:"4px 8px",opacity:plafond>0?1:.5}},h("div",{style:{color:"var(--muted)"}},"Retenue"),h("div",{className:"mono",style:{fontWeight:700,color:r>0?"var(--amber)":"var(--muted)"}},this.fmtN(r)))),
+            r>0?h("div",{style:{fontSize:12,color:"var(--muted)",marginTop:6}},"Net = "+this.fmtN(b)+" − "+this.fmtN(r)+" = "+this.fmtN(b-r)+(r<dette?" · reste dû "+this.fmtN(dette-r):" · dette soldée")):null); })),
+      h("div",{style:{flex:"none",padding:"8px 12px",paddingBottom:"max(8px,env(safe-area-inset-bottom))",borderTop:"1px solid var(--line)",background:"var(--surface)",display:"flex",justifyContent:"flex-end"}},this.btn("Enregistrer la paie du mois",enregistrer,{big:true,icon:"check"})));
+  }
+  exportPaie(){
+    const db=this.state.db; const ps=this.paieState();
+    const agents=db.agent.filter(a=>a.actif===1).sort((x,y)=>(y.salaire_brut||0)-(x.salaire_brut||0));
+    const detail=[["Agent","Fonction","Salaire brut","Dette","Retenue sur paie","Salaire net"]];
+    let brut=0,ret=0,net=0;
+    agents.forEach(a=>{ const b=a.salaire_brut||0; const dette=Math.max(0,this.detteAgent(a.id)); const r=this.paieRetenue(a,ps); brut+=b;ret+=r;net+=b-r; detail.push([(a.nom+" "+(a.prenom||"")).trim(),a.fonction||"",b,dette,r,b-r]); });
+    detail.push({_tot:true,cells:["MASSE SALARIALE","",brut,"",ret,net]});
+    const mois=MOISL[parseInt(ps.mois.slice(5),10)-1]+" "+ps.mois.slice(0,4);
+    const syn=[["GFM Services — Paie du personnel"],["Mois",mois],[""],["Masse salariale brute",brut],["Total retenues dettes",ret],["Masse salariale nette (à payer)",net],["Effectif payé",agents.length]];
+    this.xls("GFM_Paie_"+ps.mois.split("-").reverse().join("-")+".xls",[{name:"Synthèse",rows:syn},{name:"Détail",rows:detail}]);
+  }
+
+  /* ---------- SAUVEGARDE ---------- */
+  vSauvegarde(){ const ds=this.param("derniere_sauvegarde"); const vieux=!ds||(Date.now()-new Date(ds).getTime())>7*864e5;
+    return h(F,null,this.hdr("Sauvegarde et restauration"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+        this.card([h("div",{key:1,style:{display:"flex",alignItems:"center",gap:10}},h("div",{style:{width:12,height:12,borderRadius:"50%",background:vieux?"var(--amber)":"var(--green)"}}),h("div",{style:{fontWeight:700,color:"var(--navy)"}},"Dernière sauvegarde")),h("div",{key:2,style:{fontSize:14,color:"var(--muted)",marginTop:6}},ds?this.frDateLong(ds.slice(0,10))+" à "+this.heure(ds):"Aucune sauvegarde effectuée"),h("div",{key:3,style:{fontSize:13,color:"var(--muted)",marginTop:2}},this.state.db.encaissement.length+" écritures en base")]),
+        h("div",{style:{marginTop:14}},this.btn("Sauvegarder maintenant",()=>this.doBackup(),{big:true,full:true,icon:"save"})),
+        h("input",{ref:r=>this._fileInput=r,type:"file",accept:".gfmbak,application/json",style:{display:"none"},onChange:e=>{ const f=e.target.files[0]; if(f)this.pickRestore(f); e.target.value=""; }}),
+        h("div",{style:{marginTop:10}},this.btn("Restaurer une sauvegarde",()=>this._fileInput&&this._fileInput.click(),{variant:"outline",full:true})),
+        h("div",{style:{marginTop:18,background:"#EEF2FA",borderRadius:"var(--r)",padding:14,fontSize:13.5,color:"var(--muted)",lineHeight:1.5}},h("b",{style:{color:"var(--navy)"}},"Bon réflexe : "),"sauvegardez chaque fin de semaine et avant tout changement de téléphone. Conservez le fichier hors de l'appareil (messagerie, ordinateur). Le fichier .gfmbak contient l'intégralité des données et sa restauration est vérifiée par empreinte numérique.")));
+  }
+
+  /* ---------- REGLAGES ---------- */
+  vReglages(){ const cl=this.param("heure_cloture_caisse");
+    return h(F,null,this.hdr("Réglages"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:16}},
+        this.field("Heure de clôture de caisse",h("select",{value:cl,onChange:e=>{this.setParam("heure_cloture_caisse",e.target.value);this.commit();},style:this.inpS()},Array.from({length:24},(_,i)=>h("option",{key:i,value:String(i)},String(i).padStart(2,"0")+" h")))),
+        h("div",{style:{fontSize:12.5,color:"var(--muted)",margin:"-6px 2px 16px"}},"Une saisie effectuée après cette heure est rattachée par défaut à la journée suivante."),
+        this.field("Code d'accès",this.btn("Changer le code",()=>this.changeCode(),{variant:"outline",full:true})),
+        h("div",{style:{marginTop:20}},this.btn("Réinitialiser les données de démonstration",()=>this.openConfirm({title:"Réinitialiser ?",message:"Toutes les données actuelles seront remplacées par le jeu de démonstration.",okLabel:"Réinitialiser",danger:true,onOk:()=>{ const db=this.seed(true); this.setState(s=>({db,rev:s.rev+1,confirm:null,view:"accueil",stack:[]})); this.persist(db); }}),{variant:"outline",full:true,icon:"trash"}))));
+  }
+  changeCode(){ this.openKeypad({title:"Nouveau code (4 chiffres)",value:"",code:true,onCommit:v=>{ const str=String(v).padStart(4,"0").slice(-4); this.setParam("code_verrouillage_hash",this.djb2(str)); this.commit(); this.toast("Code mis à jour"); }}); }
+
+  /* ---------- AUDIT ---------- */
+  auditObjet(table,id,snap){
+    const db=this.state.db; const rec=snap||(db[table]||[]).find(r=>r.id===id)||{};
+    if(table==="encaissement"){ const v=(db.vehicule.find(x=>x.id===rec.vehicule_id)||{}).immatriculation||"véhicule ?"; const p=(db.prestation.find(x=>x.id===rec.prestation_id)||{}).libelle||""; return "Encaissement — "+v+(p?" · "+p:""); }
+    if(table==="vehicule") return "Véhicule — "+(rec.immatriculation||"#"+id);
+    if(table==="prestation") return "Prestation — "+(rec.libelle||"#"+id);
+    if(table==="agent") return "Agent — "+((rec.nom||"")+" "+(rec.prenom||"")).trim();
+    if(table==="mouvement_dette_personnel"){ const a=db.agent.find(x=>x.id===rec.agent_id)||{}; return "Dette personnel — "+((a.nom||"")+" "+(a.prenom||"")).trim(); }
+    return table+" #"+id;
+  }
+  auditEtat(table,snap){
+    const r=snap||{};
+    if(table==="encaissement") return "Recette nette "+this.fmt(r.recette_nette||0)+(r.dette_contractee?" · dette "+this.fmtN(r.dette_contractee):"")+(r.dette_payee?" · remb. "+this.fmtN(r.dette_payee):"")+(r.avance_versee?" · avance "+this.fmtN(r.avance_versee):"")+(r.supprime?" · [supprimé]":"");
+    if(table==="vehicule") return (r.chauffeur||"")+" · dette ouv. "+this.fmtN(r.dette_ouverture||0)+" · avance ouv. "+this.fmtN(r.avance_ouverture||0)+" · "+(r.actif?"actif":"archivé");
+    if(table==="prestation") return this.fmt(r.montant||0)+" · part laveur "+this.fmt(r.part_laveur_defaut||0)+" · "+(r.actif?"actif":"retiré");
+    if(table==="agent") return (r.fonction||"")+" · salaire "+this.fmt(r.salaire_brut||0)+" · "+(r.actif?"actif":"INACTIF"+(r.motif_inactif?" ("+r.motif_inactif+")":""));
+    if(table==="mouvement_dette_personnel") return (r.type==="DETTE"?"Dette ":"Remboursement ")+this.fmt(r.montant||0)+(r.motif?" · "+r.motif:"");
+    return "";
+  }
+  auditRange(){
+    const today=this.journeeToday();
+    if(this.state.auditPeriode==="jour") return [today,today];
+    if(this.state.auditPeriode==="semaine"){ const d=new Date(today+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()-6); return [this.isoDate(d),today]; }
+    return [this.state.auditFrom||today,this.state.auditTo||today];
+  }
+  auditList(){ const [a,b]=this.auditRange(); return this.state.db.journal_audit.filter(e=>{const d=e.horodatage.slice(0,10);return d>=a&&d<=b;}).sort((x,y)=>y.id-x.id); }
+  exportAudit(){
+    const list=this.auditList().slice().reverse(); const lbl={CREATION:"Création",MODIFICATION:"Modification",SUPPRESSION:"Suppression"};
+    const rows=[["Date","Heure","Objet","Type de modification","Nouvelle valeur / état","Valeur précédente"]];
+    list.forEach(e=>{ let ap={},av={}; try{ap=e.valeur_apres?JSON.parse(e.valeur_apres):{};}catch(x){} try{av=e.valeur_avant?JSON.parse(e.valeur_avant):{};}catch(x){}
+      rows.push([this.frDate(e.horodatage.slice(0,10)),this.heure(e.horodatage),this.auditObjet(e.table_cible,e.enregistrement_id,ap.id?ap:av),lbl[e.action],e.action==="SUPPRESSION"?"Objet supprimé":this.auditEtat(e.table_cible,ap),e.action==="CREATION"?"—":this.auditEtat(e.table_cible,av)]); });
+    const [a,b]=this.auditRange();
+    this.xls("GFM_Journal_Audit_"+a.split("-").reverse().join("-")+".xls",[{name:"Journal d'audit",rows}]);
+  }
+  vAudit(){
+    const lbl={CREATION:"Création",MODIFICATION:"Modification",SUPPRESSION:"Suppression"};
+    const col={CREATION:"var(--green)",MODIFICATION:"var(--bluet)",SUPPRESSION:"var(--red)"};
+    const list=this.auditList(); const today=this.journeeToday();
+    const pill=(k,l)=>h("button",{key:k,className:"press",onClick:()=>this.setState({auditPeriode:k}),style:{padding:"8px 14px",borderRadius:20,fontWeight:700,fontSize:13,background:this.state.auditPeriode===k?"var(--navy)":"var(--surface)",color:this.state.auditPeriode===k?"#fff":"var(--navy)",border:"1px solid var(--line)"}},l);
+    return h(F,null,this.hdr("Journal d'audit",{right:h("button",{className:"press",onClick:()=>this.exportAudit(),style:{color:"#fff"}},this.icon("save",24))}),
+      h("div",{style:{flex:"none",padding:"10px 14px",display:"flex",gap:8,background:"var(--surface)",borderBottom:"1px solid var(--line)"}},pill("jour","Aujourd'hui"),pill("semaine","7 jours"),pill("perso","Période")),
+      this.state.auditPeriode==="perso"?h("div",{style:{flex:"none",display:"flex",gap:8,padding:"10px 14px",background:"var(--surface)",borderBottom:"1px solid var(--line)"}},
+        h("input",{type:"date",max:today,value:this.state.auditFrom||today,onChange:e=>this.setState({auditFrom:e.target.value}),style:{flex:1,padding:10,border:"1px solid var(--line)",borderRadius:8}}),
+        h("input",{type:"date",max:today,value:this.state.auditTo||today,onChange:e=>this.setState({auditTo:e.target.value}),style:{flex:1,padding:10,border:"1px solid var(--line)",borderRadius:8}})):null,
+      h("div",{style:{flex:"none",background:"#EEF2FA",padding:"8px 14px",fontSize:12.5,color:"var(--muted)",fontWeight:600,borderBottom:"1px solid var(--line)"}},list.length+" opération"+(list.length>1?"s":"")+" sur la période"),
+      h("div",{className:"scr",style:{flex:1,overflowY:"auto",paddingBottom:20}},
+        list.length===0?h("div",{style:{padding:30,textAlign:"center",color:"var(--muted)"}},"Aucune opération sur cette période."):list.map(e=>{
+          let ap=null,av=null; try{ap=e.valeur_apres?JSON.parse(e.valeur_apres):null;}catch(x){} try{av=e.valeur_avant?JSON.parse(e.valeur_avant):null;}catch(x){}
+          const objet=this.auditObjet(e.table_cible,e.enregistrement_id,ap||av);
+          const nv=e.action==="SUPPRESSION"?"Objet supprimé":this.auditEtat(e.table_cible,ap);
+          return h("div",{key:e.id,style:{padding:"12px 16px",borderBottom:"1px solid var(--line)",background:"var(--surface)",borderLeft:"4px solid "+col[e.action]}},
+            h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}},
+              h("b",{style:{color:"var(--navy)",fontSize:14}},objet),
+              h("span",{style:{fontSize:11.5,color:"var(--muted)",whiteSpace:"nowrap"}},this.frDate(e.horodatage.slice(0,10))+" · "+this.heure(e.horodatage))),
+            h("div",{style:{fontSize:12.5,fontWeight:700,color:col[e.action],marginTop:3}},lbl[e.action]),
+            h("div",{style:{fontSize:12.5,color:"var(--text)",marginTop:2}},h("span",{style:{color:"var(--muted)"}},e.action==="SUPPRESSION"?"":"Nouvelle valeur : "),nv),
+            (e.action==="MODIFICATION"&&av)?h("div",{style:{fontSize:11.5,color:"var(--muted)",marginTop:2}},"Avant : "+this.auditEtat(e.table_cible,av)):null); })));
+  }
+  vApropos(){ return h(F,null,this.hdr("À propos"),
+    h("div",{className:"scr",style:{flex:1,overflowY:"auto",padding:20,textAlign:"center"}},
+      h("img",{src:"assets/logo_gfm.png",style:{width:150,height:150,objectFit:"contain"}}),
+      h("div",{style:{fontWeight:800,fontSize:20,color:"var(--navy)"}},"GFM Lavage"),
+      h("div",{style:{color:"var(--muted)",marginTop:4}},"Suivi des recettes de lavage"),
+      h("div",{style:{color:"var(--muted)",marginTop:2,fontSize:14}},"Version "+(this.param("version_application")||"1.0.0")+" · Pointe-Noire"),
+      h("div",{style:{display:"flex",gap:10,justifyContent:"center",marginTop:16}},["06 110 71 71","05 333 71 71"].map(t=>h("a",{key:t,href:"tel:+242"+t.replace(/\s/g,""),className:"press",style:{display:"flex",alignItems:"center",gap:7,background:"#EEF2FA",color:"var(--navy)",fontWeight:700,fontSize:13.5,padding:"10px 14px",borderRadius:24}},this.icon("phone",17,"var(--blue)"),t))),
+      h("div",{style:{textAlign:"left",background:"#EEF2FA",borderRadius:"var(--r)",padding:14,marginTop:22,fontSize:12.5,color:"var(--muted)",lineHeight:1.5}},"Application hors-ligne en Franc CFA (XAF). Fuseau Africa/Brazzaville (UTC+1). Prototype fonctionnel destiné à l'encapsulation Capacitor / Android. En cas d'activation du chiffrement, les mentions de licence SQLCipher figureront ici.")));
+  }
+
+  /* ---------- form helpers ---------- */
+  inpS(){ return {width:"100%",padding:"14px 14px",fontSize:16,border:"1.5px solid var(--line)",borderRadius:"var(--r)",background:"var(--surface)"}; }
+  field(label,control){ return h("div",{style:{marginBottom:16}},h("div",{style:{fontSize:13,fontWeight:700,color:"var(--muted)",marginBottom:7}},label),control); }
+  numBtn(val,onCommit,title,max){ return h("button",{className:"press",onClick:()=>this.openKeypad({title,value:val,max,onCommit}),style:{width:"100%",textAlign:"left",padding:"14px 14px",border:"1.5px solid var(--line)",borderRadius:"var(--r)",background:"var(--surface)",display:"flex",justifyContent:"space-between",alignItems:"center"}},h("span",{className:"mono",style:{fontSize:17,fontWeight:800,color:"var(--navy)"}},this.fmtN(val)),h("span",{style:{fontSize:13,color:"var(--muted)"}},"FCFA")); }
+
+  /* ---------- overlays ---------- */
+  renderKeypad(){ const kp=this.state.keypad;
+    const press=d=>{ let b=kp.buf; if(d==="del")b=b.slice(0,-1); else if(d==="000")b=(b||"0")==="0"?"0":b+"000"; else b=(b==="0"?"":b)+d; if(b.length>9)return; this.setState({keypad:{...kp,buf:b}}); };
+    const commit=()=>{ let v=parseInt(kp.buf||"0",10)||0; if(kp.max!=null&&v>kp.max)v=kp.max; if(kp.code){ kp.onCommit(kp.buf.padStart(4,"0").slice(-4)); } else kp.onCommit(v); this.setState({keypad:null}); };
+    const keys=["1","2","3","4","5","6","7","8","9","000","0","del"];
+    const disp=kp.code?(kp.buf||"").padEnd(4,"·"):this.fmtN(parseInt(kp.buf||"0",10)||0);
+    return h("div",{style:{position:"absolute",inset:0,background:"rgba(10,15,25,.45)",display:"flex",flexDirection:"column",justifyContent:"flex-end",zIndex:40},onClick:()=>this.setState({keypad:null})},
+      h("div",{onClick:e=>e.stopPropagation(),style:{background:"var(--surface)",borderTopLeftRadius:20,borderTopRightRadius:20,padding:18,animation:"gfmUp .18s ease"}},
+        h("div",{style:{textAlign:"center",fontWeight:700,color:"var(--muted)",fontSize:14}},kp.title),
+        h("div",{className:"mono",style:{textAlign:"center",fontSize:38,fontWeight:800,color:"var(--navy)",margin:"6px 0 14px"}},disp),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}},keys.map(k=>h("button",{key:k,className:"press",onClick:()=>press(k),style:{height:60,borderRadius:12,background:k==="del"?"transparent":"var(--bg)",fontSize:k==="del"?24:24,fontWeight:700,color:"var(--navy)"}},k==="del"?"⌫":k))),
+        this.btn("Valider",commit,{big:true,full:true}),
+        h("div",{style:{height:6}})));
+  }
+  renderDatePick(){
+    const dp=this.state.datePick; const today=this.journeeToday();
+    const [Y,M]=dp.ym.split("-").map(n=>parseInt(n,10));
+    const first=new Date(Date.UTC(Y,M-1,1));
+    const startDow=(first.getUTCDay()+6)%7; // lundi=0
+    const nDays=new Date(Date.UTC(Y,M,0)).getUTCDate();
+    const cells=[]; for(let i=0;i<startDow;i++)cells.push(null); for(let d=1;d<=nDays;d++)cells.push(d);
+    const shift=n=>{ const nd=new Date(Date.UTC(Y,M-1+n,1)); this.setState({datePick:{...dp,ym:this.isoDate(nd).slice(0,7)}}); };
+    const canNext=this.isoDate(new Date(Date.UTC(Y,M,1)))<=today;
+    const dow=["L","M","M","J","V","S","D"];
+    return h("div",{style:{position:"absolute",inset:0,background:"rgba(10,15,25,.45)",display:"flex",flexDirection:"column",justifyContent:"flex-end",zIndex:45},onClick:()=>this.setState({datePick:null})},
+      h("div",{onClick:e=>e.stopPropagation(),style:{background:"var(--surface)",borderTopLeftRadius:20,borderTopRightRadius:20,padding:18,paddingBottom:"max(18px,env(safe-area-inset-bottom))",animation:"gfmUp .18s ease"}},
+        h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}},
+          h("button",{className:"press",onClick:()=>shift(-1),style:{width:40,height:40,borderRadius:20,background:"var(--bg)",display:"grid",placeItems:"center",color:"var(--navy)"}},this.icon("back",22)),
+          h("div",{style:{fontWeight:800,fontSize:17,color:"var(--navy)"}},MOISL[M-1]+" "+Y),
+          h("button",{className:"press",onClick:()=>canNext&&shift(1),style:{width:40,height:40,borderRadius:20,background:"var(--bg)",display:"grid",placeItems:"center",color:canNext?"var(--navy)":"#C3CAD8",transform:"scaleX(-1)"}},this.icon("back",22))),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4}},dow.map((d,i)=>h("div",{key:i,style:{textAlign:"center",fontSize:11,fontWeight:700,color:"var(--muted)"}},d))),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}},cells.map((d,i)=>{ if(d==null)return h("div",{key:i}); const iso=Y+"-"+String(M).padStart(2,"0")+"-"+String(d).padStart(2,"0"); const fut=iso>today; const sel=iso===dp.value;
+          return h("button",{key:i,disabled:fut,className:"press",onClick:()=>{ this.setSF({dateOp:iso}); this.setState({datePick:null}); },style:{height:44,borderRadius:10,fontSize:15,fontWeight:sel?800:600,background:sel?"var(--navy)":"transparent",color:fut?"#C3CAD8":(sel?"#fff":"var(--text)"),border:iso===today&&!sel?"1.5px solid var(--blue)":"none"}},d); })),
+        h("div",{style:{height:8}})));
+  }
+  renderIdle(){
+    const left=this.state.idleLeft; const mm=Math.floor(left/60), ss=left%60;
+    return h("div",{style:{position:"absolute",inset:0,background:"rgba(10,15,25,.6)",display:"grid",placeItems:"center",padding:26,zIndex:70}},
+      h("div",{style:{background:"var(--surface)",borderRadius:16,padding:24,width:"100%",textAlign:"center",animation:"gfmPop .16s ease"}},
+        h("div",{style:{width:56,height:56,borderRadius:"50%",background:"#FFF4E0",display:"grid",placeItems:"center",margin:"0 auto 14px"}},this.icon("clock",30,"var(--amber)")),
+        h("div",{style:{fontWeight:800,fontSize:18,color:"var(--navy)"}},"Toujours là ?"),
+        h("div",{style:{fontSize:14.5,color:"var(--text)",marginTop:8,lineHeight:1.45}},"Aucune activité depuis 10 minutes. La session sera déconnectée dans :"),
+        h("div",{className:"mono",style:{fontSize:44,fontWeight:800,color:left<=60?"var(--red)":"var(--navy)",margin:"10px 0 4px",letterSpacing:1}},String(mm).padStart(2,"0")+":"+String(ss).padStart(2,"0")),
+        h("div",{style:{display:"flex",gap:10,marginTop:16,justifyContent:"center"}},
+          this.btn("Se déconnecter",()=>this.setState({idleWarn:false,locked:true,codeBuf:"",view:"accueil",stack:[]}),{variant:"outline"}),
+          this.btn("Rester connecté",()=>this.resetIdle(),{variant:"blue",big:true}))));
+  }
+  renderConfirm(){ const c=this.state.confirm;
+    return h("div",{style:{position:"absolute",inset:0,background:"rgba(10,15,25,.5)",display:"grid",placeItems:"center",padding:26,zIndex:50}},
+      h("div",{style:{background:"var(--surface)",borderRadius:16,padding:22,width:"100%",animation:"gfmPop .16s ease"}},
+        h("div",{style:{fontWeight:800,fontSize:18,color:c.danger?"var(--red)":"var(--navy)"}},c.title),
+        h("div",{style:{fontSize:14.5,color:"var(--text)",marginTop:8,lineHeight:1.45}},c.message),
+        h("div",{style:{display:"flex",gap:10,marginTop:20,justifyContent:"flex-end"}},
+          c.okLabel!=="Fermer"&&c.okLabel!=="Parfait"?this.btn("Annuler",()=>this.setState({confirm:null}),{variant:"outline"}):null,
+          this.btn(c.okLabel||"OK",c.onOk,{variant:c.danger?"red":"blue"}))));
+  }
+  renderRestore(){ const d=this.state.restoreData; const t=d.totaux_controle; const db=this.state.db;
+    const cur={enc:db.encaissement.length,veh:db.vehicule.length};
+    return h("div",{style:{position:"absolute",inset:0,background:"rgba(10,15,25,.5)",display:"grid",placeItems:"center",padding:22,zIndex:55}},
+      h("div",{style:{background:"var(--surface)",borderRadius:16,padding:22,width:"100%",animation:"gfmPop .16s"}},
+        h("div",{style:{fontWeight:800,fontSize:18,color:"var(--navy)"}},"Confirmer la restauration"),
+        h("div",{style:{fontSize:13.5,color:"var(--muted)",marginTop:6}},"Intégrité vérifiée ✓ — l'empreinte correspond."),
+        h("div",{style:{display:"flex",gap:10,marginTop:14}},
+          h("div",{style:{flex:1,background:"#EEF2FA",borderRadius:10,padding:12}},h("div",{style:{fontSize:12,color:"var(--muted)"}},"Fichier"),h("div",{style:{fontWeight:800,color:"var(--navy)"}},t.nb_encaissement+" écr."),h("div",{style:{fontSize:12,color:"var(--muted)"}},this.frDate(t.date_premiere_operation)+" → "+this.frDate(t.date_derniere_operation))),
+          h("div",{style:{flex:1,background:"#FBE9E7",borderRadius:10,padding:12}},h("div",{style:{fontSize:12,color:"var(--muted)"}},"Sera remplacé"),h("div",{style:{fontWeight:800,color:"var(--red)"}},cur.enc+" écr."),h("div",{style:{fontSize:12,color:"var(--muted)"}},cur.veh+" véhicules"))),
+        h("div",{style:{fontSize:13,color:"var(--muted)",marginTop:14,marginBottom:6}},"Saisissez ",h("b",null,"RESTAURER")," pour confirmer :"),
+        h("input",{value:this.state.restoreWord,onChange:e=>this.setState({restoreWord:e.target.value.toUpperCase()}),placeholder:"RESTAURER",style:this.inpS()}),
+        h("div",{style:{fontSize:12,color:"var(--muted)",marginTop:8}},"Une sauvegarde de sécurité de l'état actuel sera générée avant remplacement."),
+        h("div",{style:{display:"flex",gap:10,marginTop:16}},
+          this.btn("Annuler",()=>this.setState({restoreStep:null,restoreData:null,restoreWord:""}),{variant:"outline",full:true}),
+          this.btn("Restaurer",()=>this.execRestore(),{full:true,variant:"red",disabled:this.state.restoreWord!=="RESTAURER"}))));
+  }
+  renderUndo(){ const u=this.state.undo;
+    return h("div",{style:{position:"absolute",left:14,right:14,bottom:"calc(80px + env(safe-area-inset-bottom))",background:"var(--navy)",color:"#fff",borderRadius:12,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",zIndex:30,animation:"gfmUp .18s",boxShadow:"0 8px 24px rgba(0,0,0,.3)"}},
+      h("span",{style:{fontSize:14}},u.msg),h("button",{className:"press",onClick:()=>this.undoDelete(),style:{color:"#7FB4FF",fontWeight:800,fontSize:14}},"Annuler"));
+  }
+  renderToast(){ return h("div",{style:{position:"absolute",left:20,right:20,bottom:130,zIndex:60,display:"flex",justifyContent:"center",pointerEvents:"none"}},h("div",{style:{background:"#1A1A1A",color:"#fff",padding:"11px 18px",borderRadius:24,fontSize:13.5,fontWeight:600,maxWidth:"100%",textAlign:"center",animation:"gfmFade .2s"}},this.state.toast)); }
+}
+</script>
+</body>
+</html>
